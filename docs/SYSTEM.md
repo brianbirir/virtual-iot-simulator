@@ -3,10 +3,10 @@
 | Field | Value |
 |-------|-------|
 | **Document type** | Technical Design Document |
-| **Status** | Draft |
+| **Status** | In Progress — Phase 1 complete |
 | **Authors** | Brian |
 | **Last updated** | March 2026 |
-| **Companion doc** | `iot-simulator-implementation-strategy.md` (task-level execution plan) |
+| **Companion doc** | `IMPLEMENTATION_PLAN.md` (task-level execution plan) |
 
 ---
 
@@ -45,6 +45,18 @@ This document describes the design of a large-scale IoT device simulator capable
 The system is split into two services: a **Python-based Simulation Orchestrator** for configuration, fleet management, and scenario scripting, and a **Go-based Device Runtime** for high-performance concurrent device simulation. They communicate via a **gRPC contract** defined in Protocol Buffers.
 
 The design prioritises realistic device behaviour (not just load generation), deterministic replay for debugging, and a scaling path from single-process development to distributed cloud-native deployment.
+
+---
+
+## 1.1 Implementation Status
+
+| Phase | Scope | Status |
+| ----- | ----- | ------ |
+| **Phase 1** | Proto definitions · Go device runtime (Manager, VirtualDevice, Broadcaster) · gRPC server (SpawnDevices, StopDevices, GetFleetStatus, StreamTelemetry, GetRuntimeStatus) · Python orchestrator (RuntimeClient, config loader, CLI: spawn/stop/status/stream) · Console publisher · Gaussian + Static generators · Temperature sensor profile | ✅ Complete |
+| **Phase 2** | Brownian, Diurnal, Markov generators · Structured telemetry envelope · `masterSeed` → `deviceSeed` → `fieldSeed` chain | Planned |
+| **Phase 3** | MQTT, HTTP, AMQP protocol adapters · ScenarioEngine + SimClock · `RuntimePool` with consistent hashing | Planned |
+| **Phase 4** | Fault injection (InjectFault, UpdateDeviceBehavior) · StreamEvents · Device state transitions (ERROR, fault auto-revert) | Planned |
+| **Phase 5** | Prometheus metrics · Structured observability · Distributed multi-runtime scaling | Planned |
 
 ---
 
@@ -201,28 +213,34 @@ CLI                    — typer/click commands wrapping the above.
 ```python
 class TelemetryFieldConfig(BaseModel):
     type: Literal["gaussian", "brownian", "diurnal", "markov", "static"]
-    # Common optional fields — validated per type
+    # Gaussian
     mean: float | None = None
     stddev: float | None = None
-    baseline: float | None = None
-    amplitude: float | None = None
-    peak_hour: int | None = None
+    # Brownian
     start: float | None = None
     drift: float | None = None
     volatility: float | None = None
     mean_reversion: float | None = None
     min: float | None = None
     max: float | None = None
+    # Diurnal
+    baseline: float | None = None
+    amplitude: float | None = None
+    peak_hour: int | None = None
+    noise_stddev: float | None = None  # renamed to stddev before proto encoding
+    # Markov
     states: list[str] | None = None
     transition_matrix: list[list[float]] | None = None
-    value: Any | None = None  # for static
+    initial_state: str | None = None
+    # Static
+    value: Any | None = None
 
 class DeviceProfileConfig(BaseModel):
     type: str
-    protocol: Literal["mqtt", "amqp", "http", "coap", "console"]
-    topic_template: str
-    telemetry_interval: str  # parsed as duration, e.g. "5s", "500ms"
-    telemetry_fields: dict[str, TelemetryFieldConfig]
+    protocol: Literal["mqtt", "amqp", "http", "console"] = "console"
+    topic_template: str = "devices/{device_id}/telemetry"
+    telemetry_interval: str = "5s"  # parsed as duration, e.g. "5s", "500ms"
+    telemetry_fields: dict[str, TelemetryFieldConfig] = {}
     labels: dict[str, str] = {}
 ```
 
@@ -238,27 +256,29 @@ type VirtualDevice struct {
     ID         string
     DeviceType string
     Labels     map[string]string
-    State      DeviceState           // IDLE, RUNNING, ERROR, STOPPED
-    Generators map[string]Generator  // field_name → data generator
     Interval   time.Duration
-    Publisher  Publisher             // protocol adapter
-    Topic      string               // resolved topic string
-    Faults     []ActiveFault         // currently active fault injections
-    seed       int64                 // for deterministic replay
+    Publisher  protocol.Publisher          // protocol adapter
+    Topic      string                      // resolved topic string
+    generators map[string]generator.Generator // field_name → data generator
+    clock      *RuntimeClock
+    state      simulatorv1.DeviceState     // proto enum: IDLE, RUNNING, ERROR, STOPPED
+    telemetryCh chan<- *simulatorv1.TelemetryPoint  // write-only fan-in channel
     cancel     context.CancelFunc
     mu         sync.RWMutex
 }
 
 // Manager controls the fleet of virtual devices.
 type Manager struct {
-    devices    map[string]*VirtualDevice
-    mu         sync.RWMutex
-    telemetry  chan *TelemetryPoint   // fan-in channel
-    events     chan *DeviceEvent       // lifecycle events
-    metrics    *Metrics
-    masterSeed int64
+    devices     map[string]*VirtualDevice
+    mu          sync.RWMutex
+    clock       *RuntimeClock
+    telemetryCh chan *simulatorv1.TelemetryPoint  // fan-in to broadcaster
+    ctx         context.Context
+    cancel      context.CancelFunc
 }
 ```
+
+> **Phase 1 note:** `Faults`, per-device `seed`, and `metrics` fields are planned for Phase 4 (fault injection) and Phase 5 (observability).
 
 **Device lifecycle state machine:**
 
@@ -308,11 +328,12 @@ type Generator interface {
 
 **Seed derivation for determinism:**
 ```
-masterSeed (per simulation run)
-  └──▶ deviceSeed = masterSeed XOR hash(deviceID)
-          └──▶ fieldSeed = deviceSeed XOR hash(fieldName)
-                  └──▶ rand.New(rand.NewSource(fieldSeed))
+baseSeed (per device, derived externally or 0 for Phase 1)
+  └──▶ fieldSeed = baseSeed XOR fnv64a(fieldName)
+          └──▶ rand.New(rand.NewSource(fieldSeed))
 ```
+
+> **Planned (Phase 3):** The full 3-level derivation — `masterSeed → deviceSeed = masterSeed XOR hash(deviceID) → fieldSeed` — is not yet wired. Currently `baseSeed=0` is passed to the factory, giving per-field determinism from field name alone.
 
 #### Generator Types
 
@@ -371,10 +392,12 @@ Use cases:  Firmware version, model number, location (fixed install)
 The factory maps configuration dicts (from protobuf `Struct`) to concrete Generator instances:
 
 ```go
-func NewFromConfig(config map[string]any, seed int64) (Generator, error)
+func NewFromConfig(config map[string]any, fieldName string, baseSeed int64) (Generator, error)
 ```
 
-The `type` key in the config selects the generator. Remaining keys are validated per type. Unknown types return a descriptive error.
+The `type` key in the config selects the generator. `fieldName` is used to derive a per-field seed via `baseSeed XOR fnv64a(fieldName)`. Remaining keys are validated per type. Unknown types return a descriptive error.
+
+> **Phase 1 implemented:** `gaussian` and `static`. Brownian, diurnal, and Markov generators are planned for Phase 2.
 
 ### 5.4 Protocol Adapters
 
@@ -424,15 +447,19 @@ For RabbitMQ-based architectures.
 
 Development/testing sink. Writes `[topic] {json_payload}` to stdout. Zero dependencies, instant feedback.
 
+> **Phase 1 status:** Only the Console publisher is implemented. MQTT, HTTP, and AMQP adapters are Phase 3.
+
 #### Protocol Factory
 
 ```go
 func NewPublisher(protocol string, config map[string]any) (Publisher, error)
 ```
 
-Maps protocol names to implementations. Protocol configuration is drawn from a combination of global config and per-device-profile overrides.
+Maps protocol names to implementations. Protocol configuration is drawn from a combination of global config and per-device-profile overrides. Currently `publisherForProtocol` always returns a `ConsolePublisher` regardless of the protocol field; routing to real adapters is a Phase 3 task.
 
 ### 5.5 Scenario Engine
+
+> **Phase 3+ (not yet implemented).** The `ScenarioContext`, `ScenarioRunner`, and `SimClock` classes described below are the design target. The Phase 1 orchestrator CLI exposes `spawn`, `stop`, `status`, and `stream` commands that can be composed manually or from scripts.
 
 Scenarios are Python async functions that choreograph fleet behaviour over time. They are the primary interface for test engineers.
 
@@ -560,59 +587,98 @@ Request → Request-ID injection → Retry policy (UNAVAILABLE, 3 attempts, exp 
 ### 6.1 Device Profile (YAML → Protobuf)
 
 ```yaml
-# profiles/temperature_sensor.yaml
+# profiles/temperature_sensor.yaml  (Phase 1 — console + gaussian/static generators)
 type: temperature_sensor
-protocol: mqtt
+protocol: console
 topic_template: "devices/{device_id}/telemetry"
 telemetry_interval: 5s
 telemetry_fields:
   temperature:
-    type: diurnal
-    baseline: 22.0
-    amplitude: 5.0
-    peak_hour: 14
-    noise_stddev: 0.3
+    type: gaussian
+    mean: 22.0
+    stddev: 1.0
   humidity:
-    type: brownian
-    start: 55.0
-    drift: 0
-    volatility: 0.5
-    mean_reversion: 0.1
+    type: gaussian
     mean: 55.0
-    min: 20.0
-    max: 95.0
+    stddev: 5.0
   battery:
-    type: brownian
-    start: 100.0
-    drift: -0.001
-    volatility: 0.0
-    mean_reversion: 0.0
-    mean: 0.0
-    min: 0.0
-    max: 100.0
+    type: static
+    value: 100.0
 labels:
   category: environmental
   firmware: "1.2.0"
 ```
 
+> **Planned (Phase 2+):** Richer profiles using `diurnal`, `brownian`, and `markov` generators, and `mqtt` protocol once Phase 3 adapters land:
+>
+> ```yaml
+> # profiles/temperature_sensor_full.yaml  (target design)
+> type: temperature_sensor
+> protocol: mqtt
+> topic_template: "devices/{device_id}/telemetry"
+> telemetry_interval: 5s
+> telemetry_fields:
+>   temperature:
+>     type: diurnal
+>     baseline: 22.0
+>     amplitude: 5.0
+>     peak_hour: 14
+>     noise_stddev: 0.3
+>   humidity:
+>     type: brownian
+>     start: 55.0
+>     drift: 0
+>     volatility: 0.5
+>     mean_reversion: 0.1
+>     mean: 55.0
+>     min: 20.0
+>     max: 95.0
+>   battery:
+>     type: brownian
+>     start: 100.0
+>     drift: -0.001
+>     volatility: 0.0
+>     mean_reversion: 0.0
+>     mean: 0.0
+>     min: 0.0
+>     max: 100.0
+> labels:
+>   category: environmental
+>   firmware: "1.2.0"
+> ```
+
 ### 6.2 Telemetry Payload (JSON, as published to brokers)
+
+The current Phase 1 payload is a flat JSON object with `device_id`, `timestamp`, and one key per telemetry field:
 
 ```json
 {
-  "device_id": "temp-sensor-00042",
-  "device_type": "temperature_sensor",
-  "timestamp": "2026-03-14T10:23:45.123Z",
-  "fields": {
-    "temperature": 24.7,
-    "humidity": 53.2,
-    "battery": 87.3
-  },
-  "labels": {
-    "category": "environmental",
-    "firmware": "1.2.0"
-  }
+  "device_id": "temperature_sensor-0001",
+  "timestamp": "2026-03-14T10:23:45.123456789Z",
+  "temperature": 23.14,
+  "humidity": 57.82,
+  "battery": 100.0
 }
 ```
+
+> **Planned refinement:** A structured envelope with top-level `device_type` and a nested `fields` map is intended for Phase 2, along with label propagation:
+>
+> ```json
+> {
+>   "device_id": "temperature_sensor-0001",
+>   "device_type": "temperature_sensor",
+>   "timestamp": "2026-03-14T10:23:45.123Z",
+>   "fields": {
+>     "temperature": 24.7,
+>     "humidity": 53.2,
+>     "battery": 87.3
+>   },
+>   "labels": {
+>     "category": "environmental",
+>     "firmware": "1.2.0"
+>   }
+> }
+> ```
 
 ### 6.3 Device Event (internal, over gRPC stream)
 
@@ -672,6 +738,7 @@ Each virtual device runs as a single goroutine. The Go scheduler handles multipl
 ```
 
 **Memory budget at 100K devices:**
+
 - Goroutine stacks: 100K × 4 KB = ~400 MB
 - Per-device state: 100K × ~1 KB = ~100 MB
 - MQTT connection buffers: 100 connections × ~64 KB = ~6.4 MB
@@ -679,6 +746,7 @@ Each virtual device runs as a single goroutine. The Go scheduler handles multipl
 - **Total estimate: ~600 MB** (well within a 2 GB container)
 
 **GC tuning:**
+
 - `GOGC=100` (default) or higher to reduce GC frequency at the cost of higher steady-state heap.
 - `GOMEMLIMIT=512MiB` (or appropriate for container) to prevent OOM.
 - `sync.Pool` for `TelemetryPoint` structs to reduce allocation rate.
@@ -723,12 +791,15 @@ Device goroutine
 ```
 
 Two configurable modes per device profile:
+
 - **`drop_oldest`**: When the fan-in channel is full, the oldest point is evicted. Telemetry is lossy but the device never slows down. Metric: `sim_backpressure_drops_total`.
 - **`slow_down`**: When the channel is >80% full, the device doubles its tick interval. Restores when <50% full. Metric: `sim_backpressure_slowdowns_total`.
 
 ---
 
 ## 8. Fault Injection Framework
+
+> **Phase 4 (not yet implemented).** The `InjectFault` and `UpdateDeviceBehavior` RPCs currently return `UNIMPLEMENTED`. The proto contract and fault type enum are defined; the device-side apply logic below is the design target.
 
 Faults modify device behaviour for a bounded duration, then auto-revert.
 
@@ -853,7 +924,7 @@ Single command: `docker compose up -d`. Profiles and scenarios are mounted as vo
 
 ### 10.2 Production / Cloud-Native (Kubernetes)
 
-```
+```txt
 ┌─────────────────────────────────────────────────────────┐
 │                   Kubernetes Cluster                      │
 │                                                           │
@@ -925,13 +996,14 @@ Single command: `docker compose up -d`. Profiles and scenarios are mounted as vo
 
 ### 12.2 Capacity Planning Formula
 
-```
+```txt
 Required runtime instances = ceil(total_devices / devices_per_instance)
 Required MQTT connections  = total_devices / devices_per_connection
 Required broker throughput = total_devices / avg_telemetry_interval_seconds
 ```
 
 Example: 500K devices at 5s intervals
+
 - Runtime instances: ceil(500,000 / 100,000) = 5
 - MQTT connections: 500,000 / 1,000 = 500
 - Broker throughput: 500,000 / 5 = 100,000 msg/s
