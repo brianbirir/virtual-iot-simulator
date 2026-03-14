@@ -7,7 +7,7 @@ The system is split into two services that communicate via gRPC:
 - **Device Runtime** (Go) — the data plane. Runs one goroutine per device, generates telemetry, and streams it over the configured protocol adapter.
 - **Simulation Orchestrator** (Python) — the control plane. Loads device profiles, manages the fleet lifecycle, and exposes both a CLI and a REST API.
 
-> **Status:** Phase 1 complete — core runtime, gRPC contract, console publisher, Gaussian/Static generators, CLI, and REST API are all functional. See [docs/SYSTEM.md](docs/SYSTEM.md) for the full design and implementation roadmap.
+> **Status:** Core runtime, gRPC contract, console publisher, Gaussian/Static generators, CLI, and REST API are all functional. See [docs/SYSTEM.md](docs/SYSTEM.md) for the full design and implementation roadmap.
 
 ---
 
@@ -98,7 +98,7 @@ pipenv run iot-sim stream --type temperature_sensor
 pipenv run iot-sim stop --all
 ```
 
-### 5. Or use the REST API
+### 5. Control devices via the REST API
 
 ```bash
 # Start the API server (default: http://localhost:8000)
@@ -152,9 +152,9 @@ labels:
   firmware: "1.2.0"
 ```
 
-**Supported generator types (Phase 1):** `gaussian`, `static`
+**Supported generator types:** `gaussian`, `static`
 
-**Supported protocols (Phase 1):** `console` (stdout). MQTT, AMQP, and HTTP adapters are Phase 3.
+**Supported protocols:** `console` (stdout), MQTT, AMQP, and HTTP
 
 ---
 

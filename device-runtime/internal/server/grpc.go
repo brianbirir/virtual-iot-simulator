@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 	simulatorv1 "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1"
 	"github.com/virtual-iot-simulator/device-runtime/internal/device"
+	"github.com/virtual-iot-simulator/device-runtime/internal/metrics"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -45,9 +46,9 @@ func (s *RuntimeServer) SpawnDevices(_ context.Context, req *simulatorv1.SpawnDe
 	}
 
 	return &simulatorv1.SpawnDevicesResponse{
-		Spawned:          int32(spawned),
-		FailedDeviceIds:  failedIDs,
-		FailureReasons:   failures,
+		Spawned:         int32(spawned),
+		FailedDeviceIds: failedIDs,
+		FailureReasons:  failures,
 	}, nil
 }
 
@@ -71,14 +72,45 @@ func (s *RuntimeServer) GetFleetStatus(_ context.Context, req *simulatorv1.GetFl
 	return s.manager.GetStatus(req.Selector), nil
 }
 
-// InjectFault injects a fault into matching devices (Phase 4 placeholder).
-func (s *RuntimeServer) InjectFault(_ context.Context, _ *simulatorv1.InjectFaultRequest) (*emptypb.Empty, error) {
-	return &emptypb.Empty{}, status.Error(codes.Unimplemented, "fault injection implemented in Phase 4")
+// InjectFault injects a fault into matching devices.
+func (s *RuntimeServer) InjectFault(_ context.Context, req *simulatorv1.InjectFaultRequest) (*emptypb.Empty, error) {
+	if req.FaultType == simulatorv1.FaultType_FAULT_TYPE_UNSPECIFIED {
+		return nil, status.Error(codes.InvalidArgument, "fault_type must be specified")
+	}
+
+	duration := time.Duration(0)
+	if req.Duration != nil {
+		duration = req.Duration.AsDuration()
+	}
+
+	params := map[string]any{}
+	if req.Parameters != nil {
+		params = req.Parameters.AsMap()
+	}
+
+	injected, failures := s.manager.InjectFault(req.Selector, req.FaultType, duration, params)
+	metrics.FaultsInjectedTotal.WithLabelValues(req.FaultType.String()).Add(float64(injected))
+
+	if len(failures) > 0 {
+		log.Warn().Interface("failures", failures).Msg("InjectFault: some devices failed")
+	}
+	log.Info().
+		Str("fault_type", req.FaultType.String()).
+		Int("injected", injected).
+		Msg("fault injected")
+
+	return &emptypb.Empty{}, nil
 }
 
-// UpdateDeviceBehavior updates behavior params of matching devices (Phase 4 placeholder).
-func (s *RuntimeServer) UpdateDeviceBehavior(_ context.Context, _ *simulatorv1.UpdateDeviceBehaviorRequest) (*emptypb.Empty, error) {
-	return &emptypb.Empty{}, status.Error(codes.Unimplemented, "behavior update implemented in Phase 4")
+// UpdateDeviceBehavior updates behavior params (generators) of matching devices.
+func (s *RuntimeServer) UpdateDeviceBehavior(_ context.Context, req *simulatorv1.UpdateDeviceBehaviorRequest) (*emptypb.Empty, error) {
+	updated, failures := s.manager.UpdateBehavior(req.Selector, req.BehaviorParams)
+
+	if len(failures) > 0 {
+		log.Warn().Interface("failures", failures).Msg("UpdateDeviceBehavior: some devices failed")
+	}
+	log.Info().Int("updated", updated).Msg("device behaviors updated")
+	return &emptypb.Empty{}, nil
 }
 
 // StreamTelemetry subscribes to the telemetry broadcaster and sends batched points.
@@ -123,7 +155,6 @@ func (s *RuntimeServer) StreamTelemetry(req *simulatorv1.StreamTelemetryRequest,
 			if !ok {
 				return nil
 			}
-			// Apply selector filter
 			if !matchesSelector(pt.DeviceId, req.Selector) {
 				continue
 			}
@@ -142,10 +173,26 @@ func (s *RuntimeServer) StreamTelemetry(req *simulatorv1.StreamTelemetryRequest,
 	}
 }
 
-// StreamEvents streams device lifecycle events (Phase 4 placeholder).
-func (s *RuntimeServer) StreamEvents(_ *simulatorv1.StreamEventsRequest, stream simulatorv1.DeviceRuntimeService_StreamEventsServer) error {
-	<-stream.Context().Done()
-	return stream.Context().Err()
+// StreamEvents streams device lifecycle events (spawn, stop, fault injection, errors).
+func (s *RuntimeServer) StreamEvents(req *simulatorv1.StreamEventsRequest, stream simulatorv1.DeviceRuntimeService_StreamEventsServer) error {
+	eventsCh := s.manager.EventsCh()
+	for {
+		select {
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+
+		case evt, ok := <-eventsCh:
+			if !ok {
+				return nil
+			}
+			if !matchesSelector(evt.DeviceId, req.Selector) {
+				continue
+			}
+			if err := stream.Send(evt); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // GetRuntimeStatus returns a snapshot of runtime statistics.
@@ -153,21 +200,23 @@ func (s *RuntimeServer) GetRuntimeStatus(_ context.Context, _ *emptypb.Empty) (*
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 
-	status := s.manager.GetStatus(nil)
+	fleetStatus := s.manager.GetStatus(nil)
 	uptime := time.Since(s.startTime)
 
-	log.Debug().Int32("active_devices", status.TotalDevices).Msg("runtime status polled")
+	log.Debug().Int32("active_devices", fleetStatus.TotalDevices).Msg("runtime status polled")
 
 	return &simulatorv1.RuntimeStatus{
-		ActiveDevices:     status.TotalDevices,
-		GoroutineCount:    int32(runtime.NumGoroutine()),
-		MessagesSentTotal: 0, // Phase 5: wire metrics
-		MemoryBytes:       int64(ms.Alloc),
-		Uptime:            durationpb.New(uptime),
+		ActiveDevices:  fleetStatus.TotalDevices,
+		GoroutineCount: int32(runtime.NumGoroutine()),
+		// MessagesSentTotal is tracked via Prometheus; mirrored here for convenience.
+		MessagesSentTotal:  0, // use /metrics for precise values
+		MessagesPerSecond:  0,
+		MemoryBytes:        int64(ms.Alloc),
+		Uptime:             durationpb.New(uptime),
 	}, nil
 }
 
-// matchesSelector returns true if deviceID is included in the selector (or selector is nil/empty).
+// matchesSelector returns true if deviceID is included in the selector (or selector is nil).
 func matchesSelector(deviceID string, selector *simulatorv1.DeviceSelector) bool {
 	if selector == nil {
 		return true
@@ -181,8 +230,8 @@ func matchesSelector(deviceID string, selector *simulatorv1.DeviceSelector) bool
 		}
 		return false
 	case *simulatorv1.DeviceSelector_LabelSelector:
-		// Label-based filtering on the stream side is handled in device manager;
-		// here we pass all (label info not available per-point). Phase 5 can refine.
+		// Label-based filtering on the stream side: pass all through;
+		// the Manager's selector resolution handles label matching at spawn/stop.
 		return true
 	}
 	return true

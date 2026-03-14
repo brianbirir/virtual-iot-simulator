@@ -173,6 +173,7 @@ Context: Greenfield monorepo. Two languages, shared proto definitions.
    - `all`: lint + generate + build + test
 
 **Acceptance criteria**:
+
 - `make proto-gen` succeeds and produces generated code in `device-runtime/gen/go/` and `orchestrator/gen/python/`.
 - `make go-build` produces a binary.
 - `make py-test` runs (even if no tests yet).
@@ -264,6 +265,7 @@ message TelemetryBatch {
 ```
 
 **File: `proto/simulator/v1/scenario.proto`**
+
 ```protobuf
 syntax = "proto3";
 package simulator.v1;
@@ -274,6 +276,7 @@ option go_package = "github.com/virtual-iot-simulator/device-runtime/gen/go/simu
 ```
 
 **File: `proto/simulator/v1/orchestrator.proto`**
+
 ```protobuf
 syntax = "proto3";
 package simulator.v1;
@@ -447,6 +450,7 @@ Implement `GaussianGenerator`:
 Implement `StaticGenerator` (returns a fixed value — useful for testing).
 
 **Unit tests**:
+
 - Gaussian output is within 4σ of mean over 10,000 samples.
 - Deterministic: same seed → same sequence.
 - Static generator always returns configured value.
@@ -533,6 +537,7 @@ func (d *VirtualDevice) Run(ctx context.Context) error {
 `generatePayload(t)` iterates generators, builds a JSON byte slice with `device_id`, `timestamp`, and all field values, and also returns a `[]*simulatorv1.TelemetryPoint` slice (one per field) for the internal fan-in channel.
 
 **Unit tests**:
+
 - Device transitions through IDLE → RUNNING → STOPPED.
 - Cancelling context stops the device within one interval.
 - Generated payloads contain all configured fields.
@@ -566,6 +571,7 @@ func (m *Manager) InjectFault(selector DeviceSelector, fault FaultConfig) error
 - **Device ID generation**: Specs arrive from the orchestrator with IDs already set. The Python CLI is responsible for generating IDs before calling `SpawnDevices`. Convention: `{device_type}-{zero_padded_index}` for sequential spawns (e.g., `temperature_sensor-0001`), or `{device_type}-{uuid4_short}` when spawning from a scenario for uniqueness across batches. The Go runtime treats device IDs as opaque strings and never generates them.
 
 **Unit tests**:
+
 - Spawn 100 devices, verify all running.
 - Stop by label selector, verify only matching devices stopped.
 - Spawn duplicate ID returns failure for that ID, others succeed.
@@ -580,6 +586,7 @@ File: device-runtime/cmd/runtime/main.go
 ```
 
 **Specification**:
+
 - Implement `DeviceRuntimeServiceServer` interface from generated proto code.
 - Each RPC method delegates to `Manager`.
 - `StreamTelemetry`: The `Manager` owns a single `telemetryCh chan *simulatorv1.TelemetryPoint` (buffered, size configurable, default 10,000). Each `VirtualDevice` holds a write-only reference to this channel. The gRPC handler reads from the channel, applies the `DeviceSelector` filter, accumulates points into a `TelemetryBatch` up to `batch_size` or `flush_interval` (whichever comes first), then sends the batch to the client stream. Multiple concurrent `StreamTelemetry` RPCs each get a fan-out copy via a `Broadcaster` struct.
@@ -605,6 +612,7 @@ File: orchestrator/orchestrator/cli.py
 ```
 
 **Specification**:
+
 - `RuntimeClient` wraps the generated gRPC stub with typed methods: `spawn(specs)`, `stop(selector)`, `status()`, `stream_telemetry(selector, batch_size)`.
 - Use `grpc.aio` for async streaming.
 - CLI (use `typer`):
@@ -614,6 +622,7 @@ File: orchestrator/orchestrator/cli.py
   - `iot-sim stream --type temperature_sensor`
 
 **Acceptance criteria**:
+
 - `iot-sim spawn --profile profiles/temperature_sensor.yaml --count 1` → Go runtime spawns a device → `iot-sim stream` shows telemetry lines arriving.
 - End-to-end: Python → gRPC → Go → console publisher → stdout.
 
@@ -671,6 +680,7 @@ File: device-runtime/internal/generator/factory.go
 ```
 
 **Specification**:
+
 ```go
 // NewFromConfig creates a Generator from a proto Struct's fields.
 // The "type" key determines the generator: "gaussian", "brownian", "diurnal", "markov", "static".
@@ -690,6 +700,7 @@ File: orchestrator/orchestrator/config.py
 ```
 
 **Specification**:
+
 - Loads YAML files from `profiles/` directory.
 - Validates schema (use Pydantic models).
 - Converts to `DeviceSpec` proto messages with behavior_params as `google.protobuf.Struct`.
@@ -732,6 +743,7 @@ labels:
 ```
 
 **Acceptance criteria**:
+
 - `iot-sim spawn --profile profiles/temperature_sensor.yaml --count 50` spawns 50 devices.
 - Each device generates temperature (diurnal), humidity (brownian), and battery (linear decay) values.
 - Telemetry stream shows realistic multi-field data.
@@ -749,6 +761,7 @@ File: device-runtime/internal/protocol/mqtt.go
 ```
 
 **Specification**:
+
 - Uses `github.com/eclipse/paho.golang` (MQTT v5). Do not use the v1 `paho.mqtt.golang` library — it is in maintenance mode.
 - Constructor: `NewMQTTPublisher(brokerURL, clientIDPrefix string, opts MQTTOptions) (*MQTTPublisher, error)`
 - `MQTTOptions`: QoS (0/1/2), TLS config, credentials, keepalive, clean session.
@@ -757,6 +770,7 @@ File: device-runtime/internal/protocol/mqtt.go
 - Publishes JSON payload to resolved topic (replace `{device_id}` in template).
 
 **Integration test** (requires mosquitto or test container):
+
 - Publish 1000 messages, verify all received by subscriber.
 - Kill broker, verify reconnect and resume.
 
@@ -767,6 +781,7 @@ File: device-runtime/internal/protocol/http.go
 ```
 
 **Specification**:
+
 - POSTs JSON payload to configured endpoint URL.
 - Uses `http.Client` with connection pooling (`MaxIdleConns`, `MaxIdleConnsPerHost`).
 - Retry with exponential backoff on 5xx/timeout.
@@ -779,6 +794,7 @@ File: device-runtime/internal/protocol/amqp.go
 ```
 
 **Specification**:
+
 - Uses `github.com/rabbitmq/amqp091-go`.
 - Publishes to configured exchange with routing key from topic template.
 - Channel pooling (one channel per goroutine is AMQP best practice).
@@ -800,6 +816,7 @@ Maps `"mqtt"` → MQTTPublisher, `"http"` → HTTPPublisher, `"amqp"` → AMQPPu
 Config passed from DeviceSpec's behavior_params or a global protocol config section.
 
 **Acceptance criteria**:
+
 - `iot-sim spawn --profile profiles/temperature_sensor.yaml --count 100` with protocol `mqtt` → 100 devices publishing to a Mosquitto broker.
 - `mosquitto_sub -t "devices/#"` shows telemetry from all 100 devices.
 
@@ -816,6 +833,7 @@ File: orchestrator/orchestrator/scenario_runner.py
 ```
 
 **Specification**:
+
 ```python
 class ScenarioContext:
     """Injected into every scenario function."""
@@ -841,6 +859,7 @@ class ScenarioContext:
 ```
 
 **Scenario file convention**:
+
 ```python
 # scenarios/ramp_up.py
 async def run(ctx: ScenarioContext):
@@ -864,6 +883,7 @@ async def run(ctx: ScenarioContext):
 ```
 
 **CLI integration**:
+
 - `iot-sim scenario run scenarios/ramp_up.py`
 - `iot-sim scenario list`
 
@@ -880,6 +900,7 @@ File: orchestrator/orchestrator/clock.py
 ```
 
 **Specification**:
+
 ```python
 class SimClock:
     def __init__(self, speed_multiplier: float = 1.0, start_time: datetime = None):
@@ -896,6 +917,7 @@ class SimClock:
 ```
 
 **Sim-time integration with Go runtime**:
+
 - The orchestrator sends a `sim-clock-epoch` gRPC metadata header on every `SpawnDevices` call containing the simulation start time (RFC3339) and `sim-clock-speed` (float64 multiplier).
 - The Go runtime stores these in a `RuntimeClock` struct (created once at startup, updated on each spawn). `RuntimeClock.Now()` computes `simStart + (realElapsed * speedMultiplier)`.
 - `VirtualDevice.generatePayload(t)` calls `runtimeClock.Now()` instead of `time.Now()` for the telemetry timestamp, and passes it to generators as the `now` argument.
@@ -910,6 +932,7 @@ File: device-runtime/internal/device/fault.go
 ```
 
 **Specification**:
+
 - `DISCONNECT`: Cancel device's publisher, pause telemetry. Resume after duration.
 - `LATENCY_SPIKE`: Add configurable delay before each Publish call.
 - `DATA_CORRUPTION`: Wrap generator output with random perturbation (NaN, zero, spike).
@@ -949,11 +972,12 @@ Prometheus metrics are served on the admin HTTP server (`:8080/metrics`, configu
 
 #### Task 5.2: Structured Logging (Go)
 
-```
+```txt
 File: device-runtime/internal/logging/logger.go
 ```
 
 **Specification**:
+
 - Use `zerolog`.
 - Every device lifecycle event logged: `{"level":"info","device_id":"d1","event":"spawned","device_type":"temperature_sensor","ts":"..."}`.
 - Log levels: DEBUG (every telemetry point — disabled by default), INFO (lifecycle), WARN (publish retry), ERROR (unrecoverable).
@@ -966,6 +990,7 @@ File: device-runtime/internal/server/admin.go
 ```
 
 **Specification**:
+
 - Small HTTP server on `:8080` (alongside gRPC on `:50051`).
 - Endpoints:
   - `GET /healthz` → 200 OK
@@ -985,6 +1010,7 @@ File: device-runtime/internal/server/admin.go
 #### Task 6.1: Dockerfiles
 
 **`Dockerfile.runtime`** (multi-stage):
+
 ```dockerfile
 FROM golang:1.22-alpine AS builder
 WORKDIR /app
@@ -999,6 +1025,7 @@ ENTRYPOINT ["runtime"]
 ```
 
 **`Dockerfile.orchestrator`**:
+
 ```dockerfile
 FROM python:3.12-slim
 WORKDIR /app
@@ -1053,11 +1080,12 @@ services:
 
 #### Task 6.3: Grafana Dashboard
 
-```
+```txt
 File: deployments/grafana/dashboards/simulator.json
 ```
 
 **Panels**:
+
 - Active devices (gauge, by type)
 - Messages/second (graph, by protocol)
 - Publish latency p50/p95/p99 (graph)
@@ -1067,6 +1095,7 @@ File: deployments/grafana/dashboards/simulator.json
 - Active faults (stat panel)
 
 **Acceptance criteria**:
+
 - `docker compose up -d` starts all services.
 - `iot-sim spawn --profile profiles/temperature_sensor.yaml --count 1000` from orchestrator container.
 - Grafana dashboard at `localhost:3000` shows live metrics (datasource: `http://prometheus:9090`).
@@ -1082,6 +1111,7 @@ File: deployments/grafana/dashboards/simulator.json
 #### Task 7.1: Multi-Instance Device Sharding
 
 **Specification**:
+
 - Orchestrator maintains a list of runtime endpoints.
 - Device assignment: `runtime_index = consistentHash(device_id) % len(runtimes)`.
 - `RuntimeClient` becomes `RuntimePool` — routes spawn/stop/fault to correct instance.
@@ -1110,6 +1140,7 @@ class RuntimePool:
 #### Task 7.2: Connection Pooling for MQTT at Scale
 
 **Specification**:
+
 - One TCP connection can handle ~1000 devices (client-ID multiplexing or shared connection with unique topics).
 - Pool size configurable: `--mqtt-pool-size 100` → supports ~100K devices.
 - Connection health monitoring: replace dead connections automatically.
@@ -1117,6 +1148,7 @@ class RuntimePool:
 #### Task 7.3: Backpressure Handling
 
 **Specification**:
+
 - Device → publisher channel has bounded buffer (configurable, default 1000).
 - When buffer is full, device either drops oldest (lossy mode) or slows ticker (backpressure mode).
 - Mode configurable per device profile: `backpressure_strategy: drop_oldest | slow_down`.
@@ -1125,6 +1157,7 @@ class RuntimePool:
 #### Task 7.4: Graceful Shutdown
 
 **Specification**:
+
 - SIGINT/SIGTERM → stop accepting new devices → drain all device goroutines (with timeout) → flush telemetry → close publishers → close gRPC server.
 - Shutdown timeout configurable: `--shutdown-timeout 30s`.
 - Log progress: "Stopping 50000 devices...", "45000 remaining...", "Shutdown complete."
@@ -1132,6 +1165,7 @@ class RuntimePool:
 #### Task 7.5: Deterministic Replay
 
 **Specification**:
+
 - Every simulation run gets a `run_id` (UUID) and a `master_seed` (int64).
 - Per-device seed: `masterSeed XOR hash(deviceID)`.
 - Per-field seed: `deviceSeed XOR hash(fieldName)`.
@@ -1161,6 +1195,7 @@ Defaults (compiled) → Config file (YAML) → Environment variables → CLI fla
 ```
 
 Go runtime config:
+
 ```yaml
 # runtime-config.yaml
 grpc:

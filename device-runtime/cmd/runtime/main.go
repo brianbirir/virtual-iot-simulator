@@ -14,10 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	simulatorv1 "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1"
 	"github.com/virtual-iot-simulator/device-runtime/internal/device"
+	"github.com/virtual-iot-simulator/device-runtime/internal/protocol"
 	"github.com/virtual-iot-simulator/device-runtime/internal/server"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -25,13 +27,29 @@ import (
 )
 
 func main() {
-	port := flag.Int("port", 50051, "gRPC listen port")
-	adminPort := flag.Int("admin-port", 8080, "Admin HTTP listen port (/healthz, /readyz, /metrics)")
-	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
+	// --- gRPC / admin flags ---
+	port            := flag.Int("port", 50051, "gRPC listen port")
+	adminPort       := flag.Int("admin-port", 8080, "Admin HTTP listen port (/healthz, /readyz, /metrics)")
+	logLevel        := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "Graceful shutdown timeout")
+
+	// --- Simulation flags ---
+	masterSeed := flag.Int64("master-seed", 0, "RNG master seed (0 = random, non-zero = deterministic replay)")
+
+	// --- MQTT flags ---
+	mqttURL := flag.String("mqtt-url", "", "MQTT broker URL (e.g. tcp://localhost:1883); empty = console fallback")
+	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS level (0, 1, or 2)")
+
+	// --- HTTP flags ---
+	httpEndpoint := flag.String("http-endpoint", "", "HTTP telemetry endpoint URL; empty = console fallback")
+
+	// --- AMQP flags ---
+	amqpURL      := flag.String("amqp-url", "", "AMQP broker URL (e.g. amqp://guest:guest@localhost:5672/); empty = console fallback")
+	amqpExchange := flag.String("amqp-exchange", "iot.telemetry", "AMQP exchange name")
+
 	flag.Parse()
 
-	// Configure zerolog
+	// --- Logging ---
 	lvl, err := zerolog.ParseLevel(*logLevel)
 	if err != nil {
 		lvl = zerolog.InfoLevel
@@ -40,12 +58,19 @@ func main() {
 	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
 		With().Timestamp().Logger()
 
-	// Core components
-	mgr := device.NewManager()
+	// --- Core components ---
+	cfg := device.ManagerConfig{
+		MasterSeed: *masterSeed,
+		MQTT:       protocol.MQTTConfig{BrokerURL: *mqttURL, QoS: byte(*mqttQoS), ConnectTimeout: 10 * time.Second, KeepAlive: 30 * time.Second, CleanSession: true},
+		HTTP:       protocol.HTTPConfig{Endpoint: *httpEndpoint, Timeout: 10 * time.Second, MaxIdleConn: 20},
+		AMQP:       protocol.AMQPConfig{URL: *amqpURL, Exchange: *amqpExchange, ExchangeType: "topic"},
+	}
+
+	mgr := device.NewManager(cfg)
 	bc := server.NewBroadcaster(mgr.TelemetryCh())
 	runtimeSrv := server.NewRuntimeServer(mgr, bc)
 
-	// gRPC server
+	// --- gRPC server ---
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			server.RecoveryInterceptor(),
@@ -58,7 +83,6 @@ func main() {
 	)
 	simulatorv1.RegisterDeviceRuntimeServiceServer(grpcServer, runtimeSrv)
 
-	// Health check
 	healthSrv := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthSrv)
 	healthSrv.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
@@ -69,7 +93,7 @@ func main() {
 		log.Fatal().Err(err).Int("port", *port).Msg("failed to bind gRPC port")
 	}
 
-	// Admin HTTP server
+	// --- Admin HTTP server (health + Prometheus metrics) ---
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -79,12 +103,14 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ready")) //nolint:errcheck
 	})
+	mux.Handle("/metrics", promhttp.Handler())
+
 	adminSrv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *adminPort),
 		Handler: mux,
 	}
 
-	// Start servers
+	// --- Start servers ---
 	go func() {
 		log.Info().Int("port", *adminPort).Msg("admin HTTP server starting")
 		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -99,9 +125,13 @@ func main() {
 		}
 	}()
 
-	log.Info().Int("grpc_port", *port).Int("admin_port", *adminPort).Msg("runtime ready")
+	log.Info().
+		Int("grpc_port", *port).
+		Int("admin_port", *adminPort).
+		Int64("master_seed", *masterSeed).
+		Msg("runtime ready")
 
-	// Graceful shutdown
+	// --- Graceful shutdown ---
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

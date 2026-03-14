@@ -159,6 +159,34 @@ def _point_value(pt: object) -> str:
 
 
 # ---------------------------------------------------------------------------
+# scenario
+# ---------------------------------------------------------------------------
+
+
+scenario_app = typer.Typer(name="scenario", help="Run and manage scenario scripts.")
+app.add_typer(scenario_app)
+
+
+@scenario_app.command("run")
+def scenario_run(
+    script: str = typer.Argument(..., help="Path to scenario script (must define async def run(ctx))"),
+    speed: float = typer.Option(1.0, "--speed", "-s", help="Simulation time multiplier (1.0 = real-time, 60.0 = 1 s = 1 sim-minute)"),
+    runtime: str = typer.Option(_DEFAULT_RUNTIME, "--runtime", "-r"),
+) -> None:
+    """Execute a scenario script against the running device runtime."""
+    asyncio.run(_scenario_run(script, speed, runtime))
+
+
+async def _scenario_run(script: str, speed: float, runtime: str) -> None:
+    from orchestrator.scenario import ScenarioRunner
+
+    runner = ScenarioRunner(runtime, speed=speed)
+    console.print(f"[green]Running scenario: {script} (speed={speed}x)[/green]")
+    await runner.run(script)
+    console.print("[green]Scenario complete.[/green]")
+
+
+# ---------------------------------------------------------------------------
 # serve
 # ---------------------------------------------------------------------------
 

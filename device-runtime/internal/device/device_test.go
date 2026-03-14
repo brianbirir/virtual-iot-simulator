@@ -16,6 +16,7 @@ func makeDevice(telCh chan<- *simulatorv1.TelemetryPoint) *VirtualDevice {
 	return NewVirtualDevice(DeviceConfig{
 		ID:         "test-device-001",
 		DeviceType: "temperature_sensor",
+		Protocol:   "console",
 		Labels:     map[string]string{"env": "test"},
 		Interval:   10 * time.Millisecond,
 		Publisher:  protocol.NewConsolePublisherWriter(&bytes.Buffer{}),
@@ -119,17 +120,30 @@ func TestDevicePayloadContainsAllFields(t *testing.T) {
 			if err := json.Unmarshal([]byte(jsonPart[:end]), &m); err != nil {
 				t.Fatalf("invalid JSON: %v", err)
 			}
+			// Top-level envelope fields
 			if _, ok := m["device_id"]; !ok {
 				t.Error("missing device_id in payload")
+			}
+			if _, ok := m["device_type"]; !ok {
+				t.Error("missing device_type in payload")
 			}
 			if _, ok := m["timestamp"]; !ok {
 				t.Error("missing timestamp in payload")
 			}
-			if _, ok := m["temperature"]; !ok {
-				t.Error("missing temperature in payload")
+			// Nested fields object
+			fieldsAny, ok := m["fields"]
+			if !ok {
+				t.Fatal("missing fields object in payload")
 			}
-			if _, ok := m["status"]; !ok {
-				t.Error("missing status in payload")
+			fields, ok := fieldsAny.(map[string]any)
+			if !ok {
+				t.Fatal("fields is not an object")
+			}
+			if _, ok := fields["temperature"]; !ok {
+				t.Error("missing temperature in fields")
+			}
+			if _, ok := fields["status"]; !ok {
+				t.Error("missing status in fields")
 			}
 			break
 		}

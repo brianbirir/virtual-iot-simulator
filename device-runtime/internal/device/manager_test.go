@@ -20,7 +20,7 @@ func makeSpec(id, deviceType string, labels map[string]string) *simulatorv1.Devi
 }
 
 func TestManagerSpawn100Devices(t *testing.T) {
-	m := NewManager()
+	m := NewManager(ManagerConfig{})
 	defer m.Shutdown()
 
 	specs := make([]*simulatorv1.DeviceSpec, 100)
@@ -50,7 +50,7 @@ func TestManagerSpawn100Devices(t *testing.T) {
 }
 
 func TestManagerStopByLabelSelector(t *testing.T) {
-	m := NewManager()
+	m := NewManager(ManagerConfig{})
 	defer m.Shutdown()
 
 	// Spawn 10 "alpha" and 5 "beta"
@@ -82,7 +82,7 @@ func TestManagerStopByLabelSelector(t *testing.T) {
 }
 
 func TestManagerDuplicateIDReturnsFailure(t *testing.T) {
-	m := NewManager()
+	m := NewManager(ManagerConfig{})
 	defer m.Shutdown()
 
 	spec := makeSpec("dup-device", "sensor", nil)

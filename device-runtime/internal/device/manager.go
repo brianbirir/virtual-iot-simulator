@@ -12,9 +12,26 @@ import (
 	"github.com/virtual-iot-simulator/device-runtime/internal/generator"
 	"github.com/virtual-iot-simulator/device-runtime/internal/protocol"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const defaultTelemetryBufferSize = 10_000
+const (
+	defaultTelemetryBufferSize = 10_000
+	defaultEventsBufferSize    = 1_000
+)
+
+// ManagerConfig holds runtime-wide configuration for the Manager.
+type ManagerConfig struct {
+	// MasterSeed is the top-level RNG seed. 0 means non-deterministic.
+	// deviceSeed = MasterSeed XOR fnv64a(deviceID)
+	MasterSeed int64
+
+	// Protocol adapter configs — used by publisherForProtocol.
+	MQTT protocol.MQTTConfig
+	HTTP protocol.HTTPConfig
+	AMQP protocol.AMQPConfig
+}
 
 // Manager owns the fleet lifecycle: spawning, stopping, and querying devices.
 type Manager struct {
@@ -22,18 +39,26 @@ type Manager struct {
 	mu          sync.RWMutex
 	clock       *RuntimeClock
 	telemetryCh chan *simulatorv1.TelemetryPoint
-	// ctx is the parent context; cancelling it stops all devices.
+	eventsCh    chan *simulatorv1.DeviceEvent
+
+	cfg        ManagerConfig
+	publishers map[string]protocol.Publisher // protocol → cached shared publisher
+	pubMu      sync.RWMutex
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-// NewManager creates a Manager with a shared RuntimeClock and telemetry fan-in channel.
-func NewManager() *Manager {
+// NewManager creates a Manager with the given config.
+func NewManager(cfg ManagerConfig) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		devices:     make(map[string]*VirtualDevice),
 		clock:       NewRuntimeClock(),
 		telemetryCh: make(chan *simulatorv1.TelemetryPoint, defaultTelemetryBufferSize),
+		eventsCh:    make(chan *simulatorv1.DeviceEvent, defaultEventsBufferSize),
+		cfg:         cfg,
+		publishers:  make(map[string]protocol.Publisher),
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -42,6 +67,11 @@ func NewManager() *Manager {
 // TelemetryCh returns the read side of the fan-in telemetry channel.
 func (m *Manager) TelemetryCh() <-chan *simulatorv1.TelemetryPoint {
 	return m.telemetryCh
+}
+
+// EventsCh returns the read side of the device lifecycle events channel.
+func (m *Manager) EventsCh() <-chan *simulatorv1.DeviceEvent {
+	return m.eventsCh
 }
 
 // Clock returns the shared simulation clock.
@@ -89,14 +119,22 @@ func (m *Manager) spawnOne(spec *simulatorv1.DeviceSpec) error {
 		topic = strings.ReplaceAll(topic, "{device_id}", spec.DeviceId)
 	}
 
-	gens, err := m.buildGenerators(spec)
+	// Derive device-level seed: masterSeed XOR fnv64a(deviceID)
+	deviceSeed := generator.DeriveSeed(m.cfg.MasterSeed, spec.DeviceId)
+	gens, err := m.buildGenerators(spec, deviceSeed)
 	if err != nil {
 		return fmt.Errorf("building generators: %w", err)
+	}
+
+	proto := spec.Protocol
+	if proto == "" {
+		proto = "console"
 	}
 
 	d := NewVirtualDevice(DeviceConfig{
 		ID:          spec.DeviceId,
 		DeviceType:  spec.DeviceType,
+		Protocol:    proto,
 		Labels:      spec.Labels,
 		Interval:    interval,
 		Publisher:   pub,
@@ -104,6 +142,7 @@ func (m *Manager) spawnOne(spec *simulatorv1.DeviceSpec) error {
 		Generators:  gens,
 		Clock:       m.clock,
 		TelemetryCh: m.telemetryCh,
+		EventsCh:    m.eventsCh,
 	})
 
 	m.devices[spec.DeviceId] = d
@@ -172,9 +211,81 @@ func (m *Manager) GetStatus(selector *simulatorv1.DeviceSelector) *simulatorv1.F
 	}
 }
 
+// InjectFault injects a fault into all devices matching selector.
+// Returns injected count and failure map.
+func (m *Manager) InjectFault(
+	selector *simulatorv1.DeviceSelector,
+	faultType simulatorv1.FaultType,
+	duration time.Duration,
+	params map[string]any,
+) (int, map[string]string) {
+	ids := m.resolveSelector(selector)
+	failures := map[string]string{}
+	injected := 0
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, id := range ids {
+		d, ok := m.devices[id]
+		if !ok {
+			failures[id] = "device not found"
+			continue
+		}
+		d.AddFault(ActiveFault{
+			Type:      faultType,
+			StartedAt: time.Now(),
+			Duration:  duration,
+			Params:    params,
+		})
+		injected++
+	}
+	return injected, failures
+}
+
+// UpdateBehavior replaces generator configs for devices matching selector.
+// Returns updated count and failure map.
+func (m *Manager) UpdateBehavior(
+	selector *simulatorv1.DeviceSelector,
+	params *structpb.Struct,
+) (int, map[string]string) {
+	ids := m.resolveSelector(selector)
+	failures := map[string]string{}
+	updated := 0
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, id := range ids {
+		d, ok := m.devices[id]
+		if !ok {
+			failures[id] = "device not found"
+			continue
+		}
+		deviceSeed := generator.DeriveSeed(m.cfg.MasterSeed, id)
+		gens, err := m.buildGenerators(&simulatorv1.DeviceSpec{
+			DeviceId:      id,
+			BehaviorParams: params,
+		}, deviceSeed)
+		if err != nil {
+			failures[id] = err.Error()
+			continue
+		}
+		d.UpdateGenerators(gens)
+		updated++
+	}
+	return updated, failures
+}
+
 // Shutdown stops all devices and cancels the manager context.
 func (m *Manager) Shutdown() {
 	m.cancel()
+	// Close publisher connections.
+	m.pubMu.Lock()
+	for _, p := range m.publishers {
+		p.Close() //nolint:errcheck
+	}
+	m.pubMu.Unlock()
 }
 
 // resolveSelector returns device IDs matching the selector.
@@ -193,10 +304,8 @@ func (m *Manager) resolveSelector(selector *simulatorv1.DeviceSelector) []string
 	switch s := selector.Selector.(type) {
 	case *simulatorv1.DeviceSelector_DeviceIds:
 		return s.DeviceIds.Ids
-
 	case *simulatorv1.DeviceSelector_LabelSelector:
 		return m.resolveByLabel(s.LabelSelector)
-
 	default:
 		return nil
 	}
@@ -240,7 +349,7 @@ func (m *Manager) matchesSelector(id string, d *VirtualDevice, selector *simulat
 }
 
 // buildGenerators constructs generators from the DeviceSpec's behavior_params.
-func (m *Manager) buildGenerators(spec *simulatorv1.DeviceSpec) (map[string]generator.Generator, error) {
+func (m *Manager) buildGenerators(spec *simulatorv1.DeviceSpec, deviceSeed int64) (map[string]generator.Generator, error) {
 	if spec.BehaviorParams == nil {
 		return map[string]generator.Generator{}, nil
 	}
@@ -257,7 +366,7 @@ func (m *Manager) buildGenerators(spec *simulatorv1.DeviceSpec) (map[string]gene
 		if !ok {
 			return nil, fmt.Errorf("field %q config is not an object", fieldName)
 		}
-		g, err := generator.NewFromConfig(fieldCfg, fieldName, 0)
+		g, err := generator.NewFromConfig(fieldCfg, fieldName, deviceSeed)
 		if err != nil {
 			return nil, fmt.Errorf("field %q: %w", fieldName, err)
 		}
@@ -266,13 +375,87 @@ func (m *Manager) buildGenerators(spec *simulatorv1.DeviceSpec) (map[string]gene
 	return gens, nil
 }
 
-// publisherForProtocol returns the publisher for the given protocol string.
-// Phase 1 only supports console; real protocols are added in Phase 3.
+// publisherForProtocol returns a shared publisher for the given protocol string.
+// Falls back to ConsolePublisher on connection errors.
 func (m *Manager) publisherForProtocol(proto string) protocol.Publisher {
-	return protocol.NewConsolePublisher()
+	if proto == "" {
+		proto = "console"
+	}
+
+	m.pubMu.RLock()
+	if p, ok := m.publishers[proto]; ok {
+		m.pubMu.RUnlock()
+		return p
+	}
+	m.pubMu.RUnlock()
+
+	m.pubMu.Lock()
+	defer m.pubMu.Unlock()
+	// Double-check after acquiring write lock.
+	if p, ok := m.publishers[proto]; ok {
+		return p
+	}
+
+	p := m.createPublisher(proto)
+	m.publishers[proto] = p
+	return p
+}
+
+// createPublisher constructs the protocol-specific publisher or falls back to console.
+func (m *Manager) createPublisher(proto string) protocol.Publisher {
+	switch proto {
+	case "mqtt":
+		if m.cfg.MQTT.BrokerURL == "" {
+			log.Warn().Msg("MQTT broker URL not configured, falling back to console")
+			return protocol.NewConsolePublisher()
+		}
+		p, err := protocol.NewMQTTPublisher(m.cfg.MQTT)
+		if err != nil {
+			log.Warn().Err(err).Msg("MQTT publisher failed, falling back to console")
+			return protocol.NewConsolePublisher()
+		}
+		return p
+
+	case "http":
+		if m.cfg.HTTP.Endpoint == "" {
+			log.Warn().Msg("HTTP endpoint not configured, falling back to console")
+			return protocol.NewConsolePublisher()
+		}
+		return protocol.NewHTTPPublisher(m.cfg.HTTP)
+
+	case "amqp":
+		if m.cfg.AMQP.URL == "" {
+			log.Warn().Msg("AMQP URL not configured, falling back to console")
+			return protocol.NewConsolePublisher()
+		}
+		p, err := protocol.NewAMQPPublisher(m.cfg.AMQP)
+		if err != nil {
+			log.Warn().Err(err).Msg("AMQP publisher failed, falling back to console")
+			return protocol.NewConsolePublisher()
+		}
+		return p
+
+	default:
+		return protocol.NewConsolePublisher()
+	}
 }
 
 // durationFromProto converts a protobuf Duration to time.Duration.
 func durationFromProto(d *durationpb.Duration) time.Duration {
 	return d.AsDuration()
+}
+
+// emitFaultEvent sends a FAULT_INJECTED DeviceEvent to the events channel.
+func (m *Manager) emitFaultEvent(deviceID string, faultType simulatorv1.FaultType) {
+	evt := &simulatorv1.DeviceEvent{
+		DeviceId:  deviceID,
+		EventType: simulatorv1.DeviceEventType_DEVICE_EVENT_TYPE_FAULT_INJECTED,
+		Message:   fmt.Sprintf("fault injected: %s", faultType),
+		Timestamp: timestamppb.Now(),
+		Metadata:  map[string]string{"fault_type": faultType.String()},
+	}
+	select {
+	case m.eventsCh <- evt:
+	default:
+	}
 }

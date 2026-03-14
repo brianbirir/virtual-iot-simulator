@@ -53,10 +53,10 @@ The design prioritises realistic device behaviour (not just load generation), de
 | Phase | Scope | Status |
 | ----- | ----- | ------ |
 | **Phase 1** | Proto definitions · Go device runtime (Manager, VirtualDevice, Broadcaster) · gRPC server (SpawnDevices, StopDevices, GetFleetStatus, StreamTelemetry, GetRuntimeStatus) · Python orchestrator (RuntimeClient, config loader, CLI: spawn/stop/status/stream) · Console publisher · Gaussian + Static generators · Temperature sensor profile | ✅ Complete |
-| **Phase 2** | Brownian, Diurnal, Markov generators · Structured telemetry envelope · `masterSeed` → `deviceSeed` → `fieldSeed` chain | Planned |
-| **Phase 3** | MQTT, HTTP, AMQP protocol adapters · ScenarioEngine + SimClock · `RuntimePool` with consistent hashing | Planned |
-| **Phase 4** | Fault injection (InjectFault, UpdateDeviceBehavior) · StreamEvents · Device state transitions (ERROR, fault auto-revert) | Planned |
-| **Phase 5** | Prometheus metrics · Structured observability · Distributed multi-runtime scaling | Planned |
+| **Phase 2** | Brownian, Diurnal, Markov generators · Structured telemetry envelope (`device_type`, nested `fields`, `labels`) · `masterSeed → deviceSeed → fieldSeed` chain | ✅ Complete |
+| **Phase 3** | MQTT, HTTP, AMQP protocol adapters · Shared publisher pool in Manager · Python `RuntimePool` (consistent-hash routing) · `ScenarioEngine`, `SimClock`, `ScenarioContext`, `ScenarioRunner` · CLI `scenario run` command | ✅ Complete |
+| **Phase 4** | Fault injection: DISCONNECT, LATENCY_SPIKE, DATA_CORRUPTION, BATTERY_DRAIN, CLOCK_DRIFT · `InjectFault` + `UpdateDeviceBehavior` gRPC handlers · `StreamEvents` gRPC handler · Device lifecycle events | ✅ Complete |
+| **Phase 5** | Prometheus metrics (`sim_devices_active`, `sim_messages_sent_total`, `sim_publish_latency_seconds`, `sim_device_errors_total`, `sim_backpressure_drops_total`, `sim_faults_injected_total`) · `/metrics` endpoint on admin HTTP server · `--master-seed`, `--mqtt-url`, `--http-endpoint`, `--amqp-url` runtime flags | ✅ Complete |
 
 ---
 
