@@ -1,12 +1,22 @@
-.PHONY: all proto-gen proto-lint proto-breaking go-build go-test py-test docker-build deps
+.PHONY: all proto-gen proto-gen-go proto-gen-py proto-lint proto-breaking \
+        go-build go-test go-lint go-fmt \
+        py-test py-lint py-fmt \
+        docker-build deps deps-go deps-py lint
 
 ROOT_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 # ── Dependencies ────────────────────────────────────────────────────────────
 
-# Fetch/tidy Go modules (run after adding new deps to go.mod).
+GOLANGCI_LINT_VERSION ?= v1.64.8
+GOLANGCI_LINT        := $(shell go env GOPATH)/bin/golangci-lint
+
+GOIMPORTS := $(shell go env GOPATH)/bin/goimports
+
+# Fetch/tidy Go modules and install Go dev tools.
 deps-go:
 	cd device-runtime && go mod tidy
+	@test -f $(GOLANGCI_LINT) || go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@test -f $(GOIMPORTS) || go install golang.org/x/tools/cmd/goimports@latest
 
 # Install Python dependencies via pipenv.
 deps-py:
@@ -43,10 +53,31 @@ go-build:
 go-test:
 	cd device-runtime && go test ./...
 
+# Auto-fix Go import ordering and formatting.
+go-fmt:
+	@test -f $(GOIMPORTS) || go install golang.org/x/tools/cmd/goimports@latest
+	cd device-runtime && $(GOIMPORTS) -w -local github.com/virtual-iot-simulator ./...
+	cd device-runtime && gofmt -w ./...
+
+# Auto-installs golangci-lint to $(GOPATH)/bin if missing.
+go-lint:
+	@test -f $(GOLANGCI_LINT) || go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	cd device-runtime && $(GOLANGCI_LINT) run ./...
+
 # ── Python ───────────────────────────────────────────────────────────────────
 
 py-test:
 	cd orchestrator && pipenv run pytest tests/ -v
+
+# Check formatting and lint (CI-safe: no writes).
+py-lint:
+	cd orchestrator && pipenv run ruff format --check .
+	cd orchestrator && pipenv run ruff check .
+
+# Auto-fix formatting and safe lint issues.
+py-fmt:
+	cd orchestrator && pipenv run ruff format .
+	cd orchestrator && pipenv run ruff check --fix .
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 
@@ -56,4 +87,7 @@ docker-build:
 
 # ── All ──────────────────────────────────────────────────────────────────────
 
-all: proto-lint proto-gen go-build go-test py-test
+# Run all checks (lint + build + test). Used in CI.
+lint: go-lint py-lint
+
+all: proto-lint proto-gen go-build go-test go-lint py-test py-lint

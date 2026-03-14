@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	simulatorv1 "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
+
+	simulatorv1 "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1"
 )
 
 func makeSpec(id, deviceType string, labels map[string]string) *simulatorv1.DeviceSpec {

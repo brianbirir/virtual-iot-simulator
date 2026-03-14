@@ -1,0 +1,37 @@
+FROM python:3.12-slim
+
+# Create non-root user before any file operations
+RUN groupadd -r iotsim && useradd -r -g iotsim -d /app -s /sbin/nologin iotsim
+
+WORKDIR /app
+
+# Install dependencies first (layer cache)
+COPY orchestrator/pyproject.toml orchestrator/Pipfile ./
+RUN pip install --no-cache-dir \
+    grpcio>=1.62.0 \
+    grpcio-tools>=1.62.0 \
+    protobuf>=4.25.0 \
+    "typer>=0.12.0" \
+    "pydantic>=2.6.0" \
+    pyyaml>=6.0.1 \
+    "rich>=13.7.0" \
+    "fastapi>=0.111.0" \
+    "uvicorn[standard]>=0.29.0"
+
+# Copy generated proto stubs and package source
+COPY orchestrator/ .
+
+# Device profiles and scenario scripts are mounted or copied here
+COPY profiles/ /profiles/
+COPY orchestrator/scenarios/ /scenarios/
+
+RUN chown -R iotsim:iotsim /app /profiles /scenarios
+
+USER iotsim
+
+# Default runtime endpoint (override with -e IOT_SIM_RUNTIME=host:port)
+ENV IOT_SIM_RUNTIME=runtime:50051
+
+EXPOSE 8000
+
+ENTRYPOINT ["iot-sim"]

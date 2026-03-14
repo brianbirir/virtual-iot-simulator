@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/structpb"
+
 	simulatorv1 "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1"
 	"github.com/virtual-iot-simulator/device-runtime/internal/generator"
 	"github.com/virtual-iot-simulator/device-runtime/internal/protocol"
-	"google.golang.org/protobuf/types/known/durationpb"
-	"google.golang.org/protobuf/types/known/structpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -26,6 +26,13 @@ type ManagerConfig struct {
 	// MasterSeed is the top-level RNG seed. 0 means non-deterministic.
 	// deviceSeed = MasterSeed XOR fnv64a(deviceID)
 	MasterSeed int64
+
+	// RunID is a unique identifier for this runtime instance (used for log correlation
+	// and deterministic replay). If empty, the runtime generates one at startup.
+	RunID string
+
+	// BackpressureStrategy is applied to all devices: "drop_oldest" (default) | "slow_down".
+	BackpressureStrategy string
 
 	// Protocol adapter configs — used by publisherForProtocol.
 	MQTT protocol.MQTTConfig
@@ -44,6 +51,8 @@ type Manager struct {
 	cfg        ManagerConfig
 	publishers map[string]protocol.Publisher // protocol → cached shared publisher
 	pubMu      sync.RWMutex
+
+	wg sync.WaitGroup // tracks running device goroutines for graceful shutdown
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -132,21 +141,25 @@ func (m *Manager) spawnOne(spec *simulatorv1.DeviceSpec) error {
 	}
 
 	d := NewVirtualDevice(DeviceConfig{
-		ID:          spec.DeviceId,
-		DeviceType:  spec.DeviceType,
-		Protocol:    proto,
-		Labels:      spec.Labels,
-		Interval:    interval,
-		Publisher:   pub,
-		Topic:       topic,
-		Generators:  gens,
-		Clock:       m.clock,
-		TelemetryCh: m.telemetryCh,
-		EventsCh:    m.eventsCh,
+		ID:                   spec.DeviceId,
+		DeviceType:           spec.DeviceType,
+		Protocol:             proto,
+		Labels:               spec.Labels,
+		Interval:             interval,
+		Publisher:            pub,
+		Topic:                topic,
+		Generators:           gens,
+		Clock:                m.clock,
+		TelemetryCh:          m.telemetryCh,
+		TelemetryCap:         cap(m.telemetryCh),
+		EventsCh:             m.eventsCh,
+		BackpressureStrategy: m.cfg.BackpressureStrategy,
 	})
 
 	m.devices[spec.DeviceId] = d
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
 		if err := d.Run(m.ctx); err != nil && m.ctx.Err() == nil {
 			log.Error().Str("device_id", spec.DeviceId).Err(err).Msg("device run error")
 		}
@@ -183,7 +196,7 @@ func (m *Manager) GetStatus(selector *simulatorv1.DeviceSelector) *simulatorv1.F
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var profiles []*simulatorv1.DeviceProfile
+	profiles := make([]*simulatorv1.DeviceProfile, 0, len(m.devices))
 	byState := map[string]int32{}
 	byType := map[string]int32{}
 
@@ -264,7 +277,7 @@ func (m *Manager) UpdateBehavior(
 		}
 		deviceSeed := generator.DeriveSeed(m.cfg.MasterSeed, id)
 		gens, err := m.buildGenerators(&simulatorv1.DeviceSpec{
-			DeviceId:      id,
+			DeviceId:       id,
 			BehaviorParams: params,
 		}, deviceSeed)
 		if err != nil {
@@ -278,9 +291,39 @@ func (m *Manager) UpdateBehavior(
 }
 
 // Shutdown stops all devices and cancels the manager context.
+// It blocks until all device goroutines have exited, logging progress
+// every 5 seconds so operators can observe slow-stopping devices.
 func (m *Manager) Shutdown() {
+	m.mu.RLock()
+	total := len(m.devices)
+	m.mu.RUnlock()
+
+	log.Info().Int("devices", total).Msg("stopping all devices")
 	m.cancel()
-	// Close publisher connections.
+
+	// Poll wg.Wait() with periodic progress logs.
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			log.Info().Msg("all devices stopped")
+			goto closePublishers
+		case <-ticker.C:
+			m.mu.RLock()
+			remaining := len(m.devices)
+			m.mu.RUnlock()
+			log.Info().Int("remaining", remaining).Int("total", total).Msg("waiting for devices to stop…")
+		}
+	}
+
+closePublishers:
 	m.pubMu.Lock()
 	for _, p := range m.publishers {
 		p.Close() //nolint:errcheck
@@ -409,12 +452,22 @@ func (m *Manager) createPublisher(proto string) protocol.Publisher {
 			log.Warn().Msg("MQTT broker URL not configured, falling back to console")
 			return protocol.NewConsolePublisher()
 		}
-		p, err := protocol.NewMQTTPublisher(m.cfg.MQTT)
+		poolSize := m.cfg.MQTT.PoolSize
+		if poolSize < 2 {
+			p, err := protocol.NewMQTTPublisher(m.cfg.MQTT)
+			if err != nil {
+				log.Warn().Err(err).Msg("MQTT publisher failed, falling back to console")
+				return protocol.NewConsolePublisher()
+			}
+			return p
+		}
+		pool, err := protocol.NewMQTTPool(m.cfg.MQTT)
 		if err != nil {
-			log.Warn().Err(err).Msg("MQTT publisher failed, falling back to console")
+			log.Warn().Err(err).Int("pool_size", poolSize).Msg("MQTT pool failed, falling back to console")
 			return protocol.NewConsolePublisher()
 		}
-		return p
+		log.Info().Int("pool_size", poolSize).Msg("MQTT connection pool created")
+		return pool
 
 	case "http":
 		if m.cfg.HTTP.Endpoint == "" {
@@ -443,19 +496,4 @@ func (m *Manager) createPublisher(proto string) protocol.Publisher {
 // durationFromProto converts a protobuf Duration to time.Duration.
 func durationFromProto(d *durationpb.Duration) time.Duration {
 	return d.AsDuration()
-}
-
-// emitFaultEvent sends a FAULT_INJECTED DeviceEvent to the events channel.
-func (m *Manager) emitFaultEvent(deviceID string, faultType simulatorv1.FaultType) {
-	evt := &simulatorv1.DeviceEvent{
-		DeviceId:  deviceID,
-		EventType: simulatorv1.DeviceEventType_DEVICE_EVENT_TYPE_FAULT_INJECTED,
-		Message:   fmt.Sprintf("fault injected: %s", faultType),
-		Timestamp: timestamppb.Now(),
-		Metadata:  map[string]string{"fault_type": faultType.String()},
-	}
-	select {
-	case m.eventsCh <- evt:
-	default:
-	}
 }

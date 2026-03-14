@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -17,34 +19,38 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
+
 	simulatorv1 "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1"
 	"github.com/virtual-iot-simulator/device-runtime/internal/device"
 	"github.com/virtual-iot-simulator/device-runtime/internal/protocol"
 	"github.com/virtual-iot-simulator/device-runtime/internal/server"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
-	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func main() {
 	// --- gRPC / admin flags ---
-	port            := flag.Int("port", 50051, "gRPC listen port")
-	adminPort       := flag.Int("admin-port", 8080, "Admin HTTP listen port (/healthz, /readyz, /metrics)")
-	logLevel        := flag.String("log-level", "info", "Log level: debug, info, warn, error")
+	port := flag.Int("port", 50051, "gRPC listen port")
+	adminPort := flag.Int("admin-port", 8080, "Admin HTTP listen port (/healthz, /readyz, /metrics)")
+	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "Graceful shutdown timeout")
 
 	// --- Simulation flags ---
 	masterSeed := flag.Int64("master-seed", 0, "RNG master seed (0 = random, non-zero = deterministic replay)")
+	runID := flag.String("run-id", "", "Unique run identifier for log correlation and replay (auto-generated if empty)")
+	backpressure := flag.String("backpressure", "drop_oldest", "Backpressure strategy: drop_oldest | slow_down")
 
 	// --- MQTT flags ---
 	mqttURL := flag.String("mqtt-url", "", "MQTT broker URL (e.g. tcp://localhost:1883); empty = console fallback")
 	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS level (0, 1, or 2)")
+	mqttPoolSize := flag.Int("mqtt-pool-size", 1, "Number of MQTT connections to maintain in the pool")
 
 	// --- HTTP flags ---
 	httpEndpoint := flag.String("http-endpoint", "", "HTTP telemetry endpoint URL; empty = console fallback")
 
 	// --- AMQP flags ---
-	amqpURL      := flag.String("amqp-url", "", "AMQP broker URL (e.g. amqp://guest:guest@localhost:5672/); empty = console fallback")
+	amqpURL := flag.String("amqp-url", "", "AMQP broker URL (e.g. amqp://guest:guest@localhost:5672/); empty = console fallback")
 	amqpExchange := flag.String("amqp-exchange", "iot.telemetry", "AMQP exchange name")
 
 	flag.Parse()
@@ -58,12 +64,24 @@ func main() {
 	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
 		With().Timestamp().Logger()
 
+	// --- RunID: use provided value or auto-generate ---
+	resolvedRunID := *runID
+	if resolvedRunID == "" {
+		buf := make([]byte, 8)
+		if _, err := rand.Read(buf); err != nil {
+			log.Fatal().Err(err).Msg("failed to generate run ID")
+		}
+		resolvedRunID = hex.EncodeToString(buf)
+	}
+
 	// --- Core components ---
 	cfg := device.ManagerConfig{
-		MasterSeed: *masterSeed,
-		MQTT:       protocol.MQTTConfig{BrokerURL: *mqttURL, QoS: byte(*mqttQoS), ConnectTimeout: 10 * time.Second, KeepAlive: 30 * time.Second, CleanSession: true},
-		HTTP:       protocol.HTTPConfig{Endpoint: *httpEndpoint, Timeout: 10 * time.Second, MaxIdleConn: 20},
-		AMQP:       protocol.AMQPConfig{URL: *amqpURL, Exchange: *amqpExchange, ExchangeType: "topic"},
+		MasterSeed:           *masterSeed,
+		RunID:                resolvedRunID,
+		BackpressureStrategy: *backpressure,
+		MQTT:                 protocol.MQTTConfig{BrokerURL: *mqttURL, QoS: byte(*mqttQoS), ConnectTimeout: 10 * time.Second, KeepAlive: 30 * time.Second, CleanSession: true, PoolSize: *mqttPoolSize},
+		HTTP:                 protocol.HTTPConfig{Endpoint: *httpEndpoint, Timeout: 10 * time.Second, MaxIdleConn: 20},
+		AMQP:                 protocol.AMQPConfig{URL: *amqpURL, Exchange: *amqpExchange, ExchangeType: "topic"},
 	}
 
 	mgr := device.NewManager(cfg)
@@ -129,6 +147,8 @@ func main() {
 		Int("grpc_port", *port).
 		Int("admin_port", *adminPort).
 		Int64("master_seed", *masterSeed).
+		Str("run_id", resolvedRunID).
+		Str("backpressure", *backpressure).
 		Msg("runtime ready")
 
 	// --- Graceful shutdown ---

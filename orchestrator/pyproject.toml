@@ -29,4 +29,29 @@ packages = ["orchestrator"]
 dev = [
     "pytest>=8.1.0",
     "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "B008",  # do not perform function calls in default arguments (common in FastAPI/Typer)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["orchestrator"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

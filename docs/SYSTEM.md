@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | **Document type** | Technical Design Document |
-| **Status** | In Progress — Phase 1 complete |
+| **Status** | Complete — All phases implemented |
 | **Authors** | Brian |
 | **Last updated** | March 2026 |
 | **Companion doc** | `IMPLEMENTATION_PLAN.md` (task-level execution plan) |
@@ -57,6 +57,8 @@ The design prioritises realistic device behaviour (not just load generation), de
 | **Phase 3** | MQTT, HTTP, AMQP protocol adapters · Shared publisher pool in Manager · Python `RuntimePool` (consistent-hash routing) · `ScenarioEngine`, `SimClock`, `ScenarioContext`, `ScenarioRunner` · CLI `scenario run` command | ✅ Complete |
 | **Phase 4** | Fault injection: DISCONNECT, LATENCY_SPIKE, DATA_CORRUPTION, BATTERY_DRAIN, CLOCK_DRIFT · `InjectFault` + `UpdateDeviceBehavior` gRPC handlers · `StreamEvents` gRPC handler · Device lifecycle events | ✅ Complete |
 | **Phase 5** | Prometheus metrics (`sim_devices_active`, `sim_messages_sent_total`, `sim_publish_latency_seconds`, `sim_device_errors_total`, `sim_backpressure_drops_total`, `sim_faults_injected_total`) · `/metrics` endpoint on admin HTTP server · `--master-seed`, `--mqtt-url`, `--http-endpoint`, `--amqp-url` runtime flags | ✅ Complete |
+| **Phase 6** | Multi-stage Dockerfiles (Go runtime + Python orchestrator) · Docker Compose stack: runtime, Mosquitto, Prometheus, Grafana · Mosquitto config · Prometheus scrape config · Grafana datasource + dashboard provisioning · Non-root (`iotsim`) user in both images | ✅ Complete |
+| **Phase 7** | MQTT connection pool (`MQTTPool`, `--mqtt-pool-size`) · Backpressure `slow_down` mode (doubles tick interval at >80% queue fill, restores at <50%) + `sim_backpressure_slowdowns_total` / `sim_publish_queue_depth` metrics · Enhanced graceful shutdown (`sync.WaitGroup` + 5 s progress logging) · `RunID` (auto-generated hex or `--run-id` flag) logged at startup · Deterministic replay test (`replay_test.go`) · Example scenario (`ramp_up.py`) · golangci-lint + ruff lint/format tooling (`make go-lint`, `make py-lint`, `make go-fmt`, `make py-fmt`) | ✅ Complete |
 
 ---
 
@@ -289,7 +291,7 @@ type Manager struct {
 }
 ```
 
-> **Phase 1 note:** `Faults`, per-device `seed`, and `metrics` fields are planned for Phase 4 (fault injection) and Phase 5 (observability).
+> **Phase 4–5 (implemented).** `Faults` are applied lazily in the device Run loop. Per-device `seed` is derived from the master seed chain. All six Prometheus metrics are live.
 
 **Device lifecycle state machine:**
 
@@ -344,7 +346,7 @@ baseSeed (per device, derived externally or 0 for Phase 1)
           └──▶ rand.New(rand.NewSource(fieldSeed))
 ```
 
-> **Planned (Phase 3):** The full 3-level derivation — `masterSeed → deviceSeed = masterSeed XOR hash(deviceID) → fieldSeed` — is not yet wired. Currently `baseSeed=0` is passed to the factory, giving per-field determinism from field name alone.
+> **Phase 2 (implemented).** The full 3-level derivation is wired: `masterSeed` (from `--master-seed` flag or `--run-id` replay) → `deviceSeed = masterSeed XOR fnv64a(deviceID)` → `fieldSeed = deviceSeed XOR fnv64a(fieldName)`. Determinism is verified by `replay_test.go` across all generator types.
 
 #### Generator Types
 
@@ -408,7 +410,7 @@ func NewFromConfig(config map[string]any, fieldName string, baseSeed int64) (Gen
 
 The `type` key in the config selects the generator. `fieldName` is used to derive a per-field seed via `baseSeed XOR fnv64a(fieldName)`. Remaining keys are validated per type. Unknown types return a descriptive error.
 
-> **Phase 1 implemented:** `gaussian` and `static`. Brownian, diurnal, and Markov generators are planned for Phase 2.
+> **All generators implemented.** `gaussian`, `static`, `brownian` (Ornstein-Uhlenbeck), `diurnal` (sinusoidal daily cycle), and `markov` (probability matrix) are all complete and covered by deterministic replay tests.
 
 ### 5.4 Protocol Adapters
 
@@ -458,7 +460,7 @@ For RabbitMQ-based architectures.
 
 Development/testing sink. Writes `[topic] {json_payload}` to stdout. Zero dependencies, instant feedback.
 
-> **Phase 1 status:** Only the Console publisher is implemented. MQTT, HTTP, and AMQP adapters are Phase 3.
+> **Phase 3 (implemented).** MQTT (with TLS + auto-reconnect), HTTP, and AMQP publishers are all implemented. The manager caches one publisher (or pool) per protocol type.
 
 #### Protocol Factory
 
@@ -466,11 +468,11 @@ Development/testing sink. Writes `[topic] {json_payload}` to stdout. Zero depend
 func NewPublisher(protocol string, config map[string]any) (Publisher, error)
 ```
 
-Maps protocol names to implementations. Protocol configuration is drawn from a combination of global config and per-device-profile overrides. Currently `publisherForProtocol` always returns a `ConsolePublisher` regardless of the protocol field; routing to real adapters is a Phase 3 task.
+Maps protocol names to implementations. Protocol configuration is drawn from runtime flags (`--mqtt-url`, `--http-endpoint`, `--amqp-url`) and per-device-profile overrides. `publisherForProtocol` routes to the correct adapter using double-checked locking; a shared publisher (or `MQTTPool`) is cached per protocol key. Falls back to `ConsolePublisher` on misconfiguration.
 
 ### 5.5 Scenario Engine
 
-> **Phase 3+ (not yet implemented).** The `ScenarioContext`, `ScenarioRunner`, and `SimClock` classes described below are the design target. The Phase 1 orchestrator CLI exposes `spawn`, `stop`, `status`, and `stream` commands that can be composed manually or from scripts.
+> **Phase 3 (implemented).** `ScenarioContext`, `ScenarioRunner`, and `SimClock` are fully implemented. Scenario scripts are loaded dynamically via `importlib` and run with `iot-sim scenario run <script.py> [--speed N]`. An example scenario (`orchestrator/scenarios/ramp_up.py`) demonstrates gradual 3-wave ramp-up with mid-flight fault injection.
 
 Scenarios are Python async functions that choreograph fleet behaviour over time. They are the primary interface for test engineers.
 
@@ -810,7 +812,7 @@ Two configurable modes per device profile:
 
 ## 8. Fault Injection Framework
 
-> **Phase 4 (not yet implemented).** The `InjectFault` and `UpdateDeviceBehavior` RPCs currently return `UNIMPLEMENTED`. The proto contract and fault type enum are defined; the device-side apply logic below is the design target.
+> **Phase 4 (implemented).** `InjectFault` and `UpdateDeviceBehavior` RPCs are fully wired. `StreamEvents` delivers lifecycle and fault events over a buffered fan-in channel.
 
 Faults modify device behaviour for a bounded duration, then auto-revert.
 
@@ -883,7 +885,9 @@ The simulator is instrumented as thoroughly as a production service. This serves
 | `sim_memory_alloc_bytes` | Gauge | — | `runtime.MemStats.Alloc` |
 | `sim_faults_active` | Gauge | `fault_type` | Currently injected faults |
 | `sim_backpressure_drops_total` | Counter | `device_type` | Telemetry points dropped due to full buffer |
-| `sim_backpressure_slowdowns_total` | Counter | `device_type` | Devices that slowed tick rate |
+| `sim_backpressure_slowdowns_total` | Counter | `device_type` | Devices that entered `slow_down` mode |
+| `sim_publish_queue_depth` | Gauge | — | Current depth of the fan-in channel |
+| `sim_faults_injected_total` | Counter | `fault_type` | Total fault injections performed |
 
 ### 9.2 Structured Logging (zerolog)
 
@@ -924,14 +928,13 @@ Pre-built dashboard with panels for: active devices (gauge by type), messages/se
 
 ```yaml
 services:
-  runtime:       # Go device runtime
-  orchestrator:  # Python CLI + scenarios (optional — can run natively)
-  mosquitto:     # MQTT broker
-  prometheus:    # Metrics scraping
-  grafana:       # Dashboards
+  runtime:    # Go device runtime — ports 50051 (gRPC) + 8080 (admin/metrics)
+  mosquitto:  # eclipse-mosquitto:2 — port 1883
+  prometheus: # prom/prometheus — port 9090, scrapes runtime:8080/metrics every 15 s
+  grafana:    # grafana/grafana — port 3000, auto-provisioned datasource + dashboard
 ```
 
-Single command: `docker compose up -d`. Profiles and scenarios are mounted as volumes.
+Single command: `docker compose -f deployments/docker-compose.yaml up -d`. Both images run as the non-root `iotsim` user. Grafana dashboards and Prometheus data are persisted via named volumes (`prometheus_data`, `grafana_data`). The Python orchestrator is intended to be run natively (`pipenv run iot-sim …`) against the Dockerised runtime, but `Dockerfile.orchestrator` is provided for fully containerised deployments.
 
 ### 10.2 Production / Cloud-Native (Kubernetes)
 
@@ -986,7 +989,7 @@ Single command: `docker compose up -d`. Profiles and scenarios are mounted as vo
 | MQTT credentials | Stored in environment variables or K8s secrets. Never in YAML profiles. |
 | Admin API exposure | Bind to `127.0.0.1` by default. Expose via K8s Service only to internal namespace. |
 | Telemetry data | Simulated data only — no real PII. Label values should not contain sensitive information. |
-| Container runtime | Non-root user in Dockerfiles. Read-only filesystem where possible. |
+| Container runtime | Non-root `iotsim` user in both Dockerfiles (`addgroup`/`adduser` on Alpine; `groupadd`/`useradd` on Debian-slim). Read-only filesystem where possible. |
 | Supply chain | Pin dependency versions. Use `go.sum` and `poetry.lock`. Dependabot / Renovate for updates. |
 
 ---
@@ -1079,6 +1082,30 @@ data: {"device_id": "temperature_sensor-0002", "metric": "humidity", "value": 58
 ### 13.3 gRPC Service
 
 See Section 5.6 for the full `DeviceRuntimeService` definition. The complete proto files are in `proto/simulator/v1/`.
+
+---
+
+## 13.5 Development Tooling
+
+| Tool | Language | Command | Purpose |
+| ---- | -------- | ------- | ------- |
+| **golangci-lint** v1.64.8 | Go | `make go-lint` | Static analysis: errcheck, staticcheck, govet, goimports, misspell, prealloc, bodyclose, exhaustive, … |
+| **goimports** | Go | `make go-fmt` | Auto-fix import ordering (stdlib → third-party → local) + `gofmt` |
+| **ruff** ≥ 0.4 | Python | `make py-lint` | Lint (E/W/F/I/B/UP rules) + format check — CI-safe (no writes) |
+| | | `make py-fmt` | Auto-fix format + safe lint issues |
+| **Buf** | Proto | `make proto-lint` | Schema linting + breaking-change detection |
+
+Install all Go tools at once:
+
+```text
+make deps-go   # go mod tidy + golangci-lint + goimports
+```
+
+Install Python tools:
+
+```text
+make deps-py   # pipenv install --dev  (includes ruff)
+```
 
 ---
 

@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-	simulatorv1 "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1"
-	"github.com/virtual-iot-simulator/device-runtime/internal/device"
-	"github.com/virtual-iot-simulator/device-runtime/internal/metrics"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
+
+	simulatorv1 "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1"
+	"github.com/virtual-iot-simulator/device-runtime/internal/device"
+	"github.com/virtual-iot-simulator/device-runtime/internal/metrics"
 )
 
 // RuntimeServer implements DeviceRuntimeServiceServer.
@@ -209,10 +210,10 @@ func (s *RuntimeServer) GetRuntimeStatus(_ context.Context, _ *emptypb.Empty) (*
 		ActiveDevices:  fleetStatus.TotalDevices,
 		GoroutineCount: int32(runtime.NumGoroutine()),
 		// MessagesSentTotal is tracked via Prometheus; mirrored here for convenience.
-		MessagesSentTotal:  0, // use /metrics for precise values
-		MessagesPerSecond:  0,
-		MemoryBytes:        int64(ms.Alloc),
-		Uptime:             durationpb.New(uptime),
+		MessagesSentTotal: 0, // use /metrics for precise values
+		MessagesPerSecond: 0,
+		MemoryBytes:       int64(ms.Alloc),
+		Uptime:            durationpb.New(uptime),
 	}, nil
 }
 

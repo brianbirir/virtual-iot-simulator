@@ -127,15 +127,13 @@ func requireFloat(config map[string]any, key, fieldName string) (float64, error)
 
 // optFloat returns a float64 from config[key], or 0 if absent or wrong type.
 func optFloat(config map[string]any, key string) float64 {
-	v, _ := config[key]
-	f, _ := v.(float64)
+	f, _ := config[key].(float64)
 	return f
 }
 
 // optString returns a string from config[key], or "" if absent.
 func optString(config map[string]any, key string) string {
-	v, _ := config[key]
-	s, _ := v.(string)
+	s, _ := config[key].(string)
 	return s
 }
 

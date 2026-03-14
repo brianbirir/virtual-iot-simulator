@@ -12,14 +12,15 @@ import (
 
 // MQTTConfig holds connection parameters for the MQTT publisher.
 type MQTTConfig struct {
-	BrokerURL       string        // e.g. "tcp://localhost:1883" or "ssl://broker:8883"
-	QoS             byte          // 0, 1, or 2
-	ConnectTimeout  time.Duration // default 10s
-	KeepAlive       time.Duration // default 30s
-	CleanSession    bool          // default true
-	CACertPath      string        // optional, for TLS
-	ClientCertPath  string        // optional, for mutual TLS
-	ClientKeyPath   string        // optional, for mutual TLS
+	BrokerURL      string        // e.g. "tcp://localhost:1883" or "ssl://broker:8883"
+	QoS            byte          // 0, 1, or 2
+	ConnectTimeout time.Duration // default 10s
+	KeepAlive      time.Duration // default 30s
+	CleanSession   bool          // default true
+	CACertPath     string        // optional, for TLS
+	ClientCertPath string        // optional, for mutual TLS
+	ClientKeyPath  string        // optional, for mutual TLS
+	PoolSize       int           // number of MQTT connections to maintain; 0/1 = single connection
 }
 
 // DefaultMQTTConfig returns sensible defaults.
@@ -36,8 +37,8 @@ func DefaultMQTTConfig(brokerURL string) MQTTConfig {
 // MQTTPublisher publishes telemetry to an MQTT broker.
 // It is safe for concurrent use.
 type MQTTPublisher struct {
-	client  mqtt.Client
-	qos     byte
+	client   mqtt.Client
+	qos      byte
 	clientID string
 }
 
@@ -96,5 +97,48 @@ func (p *MQTTPublisher) Publish(ctx context.Context, topic string, payload []byt
 // Close disconnects from the broker.
 func (p *MQTTPublisher) Close() error {
 	p.client.Disconnect(250)
+	return nil
+}
+
+// MQTTPool manages a fixed pool of MQTT connections and distributes Publish
+// calls across them in round-robin order.
+type MQTTPool struct {
+	conns  []*MQTTPublisher
+	cursor atomic.Int64
+}
+
+// NewMQTTPool creates n MQTT connections using cfg. Returns an error if any
+// connection fails.
+func NewMQTTPool(cfg MQTTConfig) (*MQTTPool, error) {
+	n := cfg.PoolSize
+	if n < 1 {
+		n = 1
+	}
+	pool := &MQTTPool{conns: make([]*MQTTPublisher, 0, n)}
+	for i := 0; i < n; i++ {
+		p, err := NewMQTTPublisher(cfg)
+		if err != nil {
+			// Close already-connected members before returning.
+			for _, c := range pool.conns {
+				c.Close() //nolint:errcheck
+			}
+			return nil, fmt.Errorf("MQTT pool connection %d: %w", i, err)
+		}
+		pool.conns = append(pool.conns, p)
+	}
+	return pool, nil
+}
+
+// Publish forwards to the next connection in the pool (round-robin).
+func (p *MQTTPool) Publish(ctx context.Context, topic string, payload []byte) error {
+	idx := p.cursor.Add(1) % int64(len(p.conns))
+	return p.conns[idx].Publish(ctx, topic, payload)
+}
+
+// Close disconnects all pooled connections.
+func (p *MQTTPool) Close() error {
+	for _, c := range p.conns {
+		c.Close() //nolint:errcheck
+	}
 	return nil
 }

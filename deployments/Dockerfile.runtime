@@ -1,0 +1,28 @@
+# Stage 1: Build
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /app
+
+# Cache module downloads separately from source
+COPY device-runtime/go.mod device-runtime/go.sum ./
+RUN go mod download
+
+COPY device-runtime/ .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w" \
+    -o /runtime ./cmd/runtime
+
+# Stage 2: Minimal runtime image
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata \
+ && addgroup -S iotsim && adduser -S -G iotsim iotsim
+
+COPY --from=builder /runtime /usr/local/bin/runtime
+
+USER iotsim
+
+EXPOSE 50051 8080
+
+ENTRYPOINT ["runtime"]
+CMD ["--port", "50051", "--admin-port", "8080", "--log-level", "info"]

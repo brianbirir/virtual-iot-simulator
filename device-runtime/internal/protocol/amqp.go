@@ -29,10 +29,9 @@ func DefaultAMQPConfig(url string) AMQPConfig {
 // One AMQP channel is allocated per goroutine via a sync.Pool to satisfy the
 // AMQP spec requirement that channels are not shared between goroutines.
 type AMQPPublisher struct {
-	conn     *amqp.Connection
-	cfg      AMQPConfig
-	pool     sync.Pool
-	mu       sync.Mutex // guards conn for reconnect
+	conn *amqp.Connection
+	cfg  AMQPConfig
+	pool sync.Pool
 }
 
 // NewAMQPPublisher dials an AMQP broker and declares the exchange.

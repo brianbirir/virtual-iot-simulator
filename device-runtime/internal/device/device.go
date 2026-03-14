@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	simulatorv1 "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1"
 	"github.com/virtual-iot-simulator/device-runtime/internal/generator"
 	"github.com/virtual-iot-simulator/device-runtime/internal/metrics"
 	"github.com/virtual-iot-simulator/device-runtime/internal/protocol"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // VirtualDevice simulates a single IoT device. Run in a goroutine via Run().
@@ -28,10 +29,13 @@ type VirtualDevice struct {
 	Topic      string
 
 	// telemetryCh is a write-only reference to the Manager's fan-in channel.
-	telemetryCh chan<- *simulatorv1.TelemetryPoint
+	telemetryCh  chan<- *simulatorv1.TelemetryPoint
+	telemetryCap int // capacity of telemetryCh; used for slow_down fill checks
 
 	// eventsCh delivers lifecycle events to the Manager's StreamEvents broadcaster.
 	eventsCh chan<- *simulatorv1.DeviceEvent
+
+	backpressureStrategy string // "drop_oldest" | "slow_down"
 
 	generators map[string]generator.Generator
 	clock      *RuntimeClock
@@ -45,34 +49,45 @@ type VirtualDevice struct {
 
 // DeviceConfig holds constructor parameters for a VirtualDevice.
 type DeviceConfig struct {
-	ID          string
-	DeviceType  string
-	Protocol    string
-	Labels      map[string]string
-	Interval    time.Duration
-	Publisher   protocol.Publisher
-	Topic       string
-	Generators  map[string]generator.Generator
-	Clock       *RuntimeClock
-	TelemetryCh chan<- *simulatorv1.TelemetryPoint
-	EventsCh    chan<- *simulatorv1.DeviceEvent
+	ID                   string
+	DeviceType           string
+	Protocol             string
+	Labels               map[string]string
+	Interval             time.Duration
+	Publisher            protocol.Publisher
+	Topic                string
+	Generators           map[string]generator.Generator
+	Clock                *RuntimeClock
+	TelemetryCh          chan<- *simulatorv1.TelemetryPoint
+	EventsCh             chan<- *simulatorv1.DeviceEvent
+	BackpressureStrategy string // "drop_oldest" (default) | "slow_down"
+
+	// telemetryCap is the capacity of the fan-in channel; used for slow_down
+	// fill-fraction checks. Set by Manager.
+	TelemetryCap int
 }
 
 // NewVirtualDevice constructs a VirtualDevice in the IDLE state.
 func NewVirtualDevice(cfg DeviceConfig) *VirtualDevice {
+	strategy := cfg.BackpressureStrategy
+	if strategy == "" {
+		strategy = "drop_oldest"
+	}
 	return &VirtualDevice{
-		ID:          cfg.ID,
-		DeviceType:  cfg.DeviceType,
-		Protocol:    cfg.Protocol,
-		Labels:      cfg.Labels,
-		Interval:    cfg.Interval,
-		Publisher:   cfg.Publisher,
-		Topic:       cfg.Topic,
-		generators:  cfg.Generators,
-		clock:       cfg.Clock,
-		telemetryCh: cfg.TelemetryCh,
-		eventsCh:    cfg.EventsCh,
-		state:       simulatorv1.DeviceState_DEVICE_STATE_IDLE,
+		ID:                   cfg.ID,
+		DeviceType:           cfg.DeviceType,
+		Protocol:             cfg.Protocol,
+		Labels:               cfg.Labels,
+		Interval:             cfg.Interval,
+		Publisher:            cfg.Publisher,
+		Topic:                cfg.Topic,
+		generators:           cfg.Generators,
+		clock:                cfg.Clock,
+		telemetryCh:          cfg.TelemetryCh,
+		telemetryCap:         cfg.TelemetryCap,
+		eventsCh:             cfg.EventsCh,
+		backpressureStrategy: strategy,
+		state:                simulatorv1.DeviceState_DEVICE_STATE_IDLE,
 	}
 }
 
@@ -117,7 +132,8 @@ func (d *VirtualDevice) Run(ctx context.Context) error {
 	log.Info().Str("device_id", d.ID).Str("device_type", d.DeviceType).Msg("device spawned")
 	d.emitEvent(simulatorv1.DeviceEventType_DEVICE_EVENT_TYPE_SPAWNED, "device started")
 
-	ticker := time.NewTicker(d.Interval)
+	currentInterval := d.Interval
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 	defer func() {
 		d.setState(simulatorv1.DeviceState_DEVICE_STATE_STOPPED)
@@ -127,6 +143,7 @@ func (d *VirtualDevice) Run(ctx context.Context) error {
 	}()
 
 	devState := map[string]any{}
+	slowed := false
 
 	for {
 		select {
@@ -134,6 +151,23 @@ func (d *VirtualDevice) Run(ctx context.Context) error {
 			return ctx.Err()
 
 		case <-ticker.C:
+			// slow_down backpressure: adjust tick rate based on channel fill fraction.
+			if d.backpressureStrategy == "slow_down" && d.telemetryCap > 0 {
+				fill := float64(len(d.telemetryCh)) / float64(d.telemetryCap)
+				if !slowed && fill > 0.80 {
+					slowed = true
+					currentInterval *= 2
+					ticker.Reset(currentInterval)
+					metrics.BackpressureSlowdownsTotal.WithLabelValues(d.DeviceType).Inc()
+					log.Debug().Str("device_id", d.ID).Float64("fill", fill).Dur("interval", currentInterval).Msg("backpressure: slowing down")
+				} else if slowed && fill < 0.50 {
+					slowed = false
+					currentInterval = d.Interval
+					ticker.Reset(currentInterval)
+					log.Debug().Str("device_id", d.ID).Float64("fill", fill).Dur("interval", currentInterval).Msg("backpressure: restored normal rate")
+				}
+			}
+
 			now := d.clock.Now()
 			payload, points := d.generatePayload(devState, now)
 
@@ -253,6 +287,9 @@ func (d *VirtualDevice) applyFaults(
 	shouldPublish := true
 	for _, f := range d.faults {
 		switch f.Type {
+		case simulatorv1.FaultType_FAULT_TYPE_UNSPECIFIED:
+			// no-op
+
 		case simulatorv1.FaultType_FAULT_TYPE_DISCONNECT:
 			shouldPublish = false
 

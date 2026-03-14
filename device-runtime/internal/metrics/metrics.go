@@ -61,4 +61,19 @@ var (
 		},
 		[]string{"fault_type"},
 	)
+
+	// BackpressureSlowdownsTotal counts how many times a device entered slow_down mode.
+	BackpressureSlowdownsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sim_backpressure_slowdowns_total",
+			Help: "Number of times a device slowed its tick rate due to backpressure.",
+		},
+		[]string{"device_type"},
+	)
+
+	// PublishQueueDepth tracks the current number of items in the fan-in channel.
+	PublishQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "sim_publish_queue_depth",
+		Help: "Current number of telemetry points queued in the fan-in channel.",
+	})
 )

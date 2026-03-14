@@ -1,0 +1,32 @@
+linters:
+  enable:
+    - errcheck       # check unchecked errors
+    - gosimple       # simplification suggestions
+    - govet          # go vet checks
+    - ineffassign    # detect ineffectual assignments
+    - staticcheck    # staticcheck suite
+    - unused         # unused code
+    - gofmt          # formatting compliance
+    - goimports      # import ordering
+    - misspell       # common spelling mistakes
+    - prealloc       # suggest slice pre-allocation
+    - noctx          # detect http requests without context
+    - bodyclose      # ensure http response bodies are closed
+    - exhaustive     # exhaustive switch statements on enums
+
+linters-settings:
+  gofmt:
+    simplify: true
+  goimports:
+    local-prefixes: github.com/virtual-iot-simulator
+  exhaustive:
+    default-signifies-exhaustive: true
+
+issues:
+  exclude-rules:
+    # Test files are allowed to use t.Fatal and assert patterns freely.
+    - path: _test\.go
+      linters: [errcheck]
+    # nolint comments placed by us are intentional.
+    - linters: [noctx]
+      text: "net/http"
