@@ -7,7 +7,125 @@ The system is split into two services that communicate via gRPC:
 - **Device Runtime** (Go) — the data plane. Runs one goroutine per device, generates telemetry, and streams it over the configured protocol adapter.
 - **Simulation Orchestrator** (Python) — the control plane. Loads device profiles, manages the fleet lifecycle, and exposes both a CLI and a REST API.
 
-> **Status:** Core runtime, gRPC contract, console publisher, Gaussian/Static generators, CLI, and REST API are all functional. See [docs/SYSTEM.md](docs/SYSTEM.md) for the full design and implementation roadmap.
+> **Status:** All phases complete. See [docs/SYSTEM.md](docs/SYSTEM.md) for the full design document.
+
+---
+
+## System Overview
+
+```text
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                        Operator / CI                                    │
+ │                                                                         │
+ │   iot-sim spawn / stop / status / stream      REST API :8000            │
+ │   iot-sim scenario run ramp_up.py             POST /api/v1/devices/...  │
+ └──────────────┬──────────────────────────────────────┬───────────────────┘
+                │ gRPC (SpawnDevices, StopDevices,      │ HTTP / SSE
+                │ InjectFault, StreamTelemetry …)       │
+ ┌──────────────▼───────────────────────────────────────▼───────────────────┐
+ │                  Simulation Orchestrator  (Python)                        │
+ │                                                                           │
+ │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  ┌─────────────┐  │
+ │  │  Typer CLI  │  │  FastAPI app │  │  RuntimePool  │  │  Scenario   │  │
+ │  │  (cli.py)   │  │  (api.py)    │  │  (pool.py)    │  │  Engine     │  │
+ │  └──────┬──────┘  └──────┬───────┘  └───────┬───────┘  │ (scenario  │  │
+ │         └────────────────┴──────────────────►│          │  .py)      │  │
+ │                                              │          └─────────────┘  │
+ │                             consistent-hash ring                          │
+ └──────────────────────────────────┬───────────────────────────────────────┘
+                                    │ gRPC :50051
+ ┌──────────────────────────────────▼───────────────────────────────────────┐
+ │                    Device Runtime  (Go)                                   │
+ │                                                                           │
+ │  ┌──────────────────────────────────────────────────────┐                 │
+ │  │  Manager                                             │                 │
+ │  │   spawnOne() ──► VirtualDevice goroutine × N         │                 │
+ │  │                  ┌─────────────────────────────┐     │                 │
+ │  │                  │  ticker → Generator.Next()  │     │                 │
+ │  │                  │  applyFaults()              │     │                 │
+ │  │                  │  Publisher.Publish()        │     │                 │
+ │  │                  └──────────────┬──────────────┘     │                 │
+ │  │                                 │ fan-in chan         │                 │
+ │  │  Broadcaster ◄──────────────────┘                    │                 │
+ │  └──────────────────────────────────────────────────────┘                 │
+ │                                                                           │
+ │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                    │
+ │  │  MQTT pool   │  │  HTTP POST   │  │  AMQP chan   │  ← protocol        │
+ │  │  (paho)      │  │  (net/http)  │  │  pool        │    adapters        │
+ │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘                    │
+ │         │                 │                  │                            │
+ │  :8080 /metrics (Prometheus)    /healthz  /readyz                         │
+ └─────────┼─────────────────┼─────────────────┼──────────────────────────-─┘
+           │                 │                  │
+ ┌─────────▼─────┐   ┌───────▼──────┐   ┌──────▼───────┐   ┌─────────────┐
+ │   Mosquitto   │   │  HTTP target │   │   RabbitMQ   │   │  Prometheus │
+ │   :1883       │   │  (any)       │   │   :5672      │   │  :9090      │
+ └───────────────┘   └──────────────┘   └──────────────┘   └──────┬──────┘
+                                                                   │
+                                                            ┌──────▼──────┐
+                                                            │   Grafana   │
+                                                            │   :3000     │
+                                                            └─────────────┘
+```
+
+**Data generators** (per telemetry field, seeded deterministically):
+`gaussian` · `static` · `brownian` (Ornstein-Uhlenbeck) · `diurnal` (sinusoidal) · `markov` (state machine)
+
+**Fault injection** (applied per device tick):
+`DISCONNECT` · `LATENCY_SPIKE` · `DATA_CORRUPTION` · `BATTERY_DRAIN` · `CLOCK_DRIFT`
+
+```mermaid
+flowchart TB
+    subgraph Operator["Operator / CI"]
+        CLI["iot-sim CLI\nspawn · stop · status · stream\nscenario run"]
+        RESTC["REST client\ncurl / SDK"]
+    end
+
+    subgraph Orchestrator["Simulation Orchestrator (Python)"]
+        direction TB
+        API["FastAPI\n:8000"]
+        CLIAPP["Typer CLI"]
+        POOL["RuntimePool\nconsistent-hash ring"]
+        SCENARIO["ScenarioEngine\nSimClock · ScenarioContext"]
+        CLI --> CLIAPP
+        RESTC --> API
+        API --> POOL
+        CLIAPP --> POOL
+        SCENARIO --> POOL
+    end
+
+    subgraph Runtime["Device Runtime (Go)  :50051"]
+        direction TB
+        GRPC["gRPC Server\nDeviceRuntimeService"]
+        MGR["Manager\nspawnOne · Stop · InjectFault"]
+        BC["Broadcaster\nfan-in channel"]
+
+        subgraph Devices["VirtualDevice goroutine × N"]
+            GEN["Generator.Next()\ngaussian · brownian\ndiurnal · markov · static"]
+            FAULT["applyFaults()\nDISCONNECT · LATENCY_SPIKE\nDATA_CORRUPTION · CLOCK_DRIFT"]
+            PUB["Publisher.Publish()"]
+            GEN --> FAULT --> PUB
+        end
+
+        GRPC --> MGR --> Devices
+        Devices --> BC
+    end
+
+    subgraph Infra["Infrastructure"]
+        MQTT["Mosquitto\n:1883"]
+        PROM["Prometheus\n:9090"]
+        GRAF["Grafana\n:3000"]
+        RABBIT["RabbitMQ\n:5672"]
+        HTTP["HTTP target\n(any)"]
+    end
+
+    POOL -->|gRPC| GRPC
+    PUB -->|MQTT| MQTT
+    PUB -->|AMQP| RABBIT
+    PUB -->|HTTP POST| HTTP
+    Runtime -->|"/metrics :8080"| PROM
+    PROM --> GRAF
+```
 
 ---
 

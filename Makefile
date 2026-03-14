@@ -1,13 +1,32 @@
 .PHONY: all proto-gen proto-gen-go proto-gen-py proto-lint proto-breaking \
         go-build go-test go-lint go-fmt \
+        docker-go-test docker-go-lint docker-go-fmt \
         py-test py-lint py-fmt \
-        docker-build deps deps-go deps-py lint
+        docker-py-test docker-py-lint docker-py-fmt \
+        docker-build docker-up docker-down docker-logs \
+        deps deps-go deps-py lint docker-lint
 
-ROOT_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+ROOT_DIR              := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+DOCKER_GO_IMAGE       ?= golang:1.22-alpine
+DOCKER_PY_IMAGE       ?= python:3.12-slim
+GOLANGCI_LINT_VERSION ?= v1.64.8
+# Source is mounted read-only; a named volume provides a writable module/build
+# cache that persists across runs so repeated invocations stay fast.
+DOCKER_GO_RUN := docker run --rm \
+	-v "$(ROOT_DIR):/workspace:ro" \
+	-v iot-sim-gocache:/root/.cache \
+	-v iot-sim-gopath:/go \
+	-w /workspace/device-runtime \
+	$(DOCKER_GO_IMAGE)
+# Source is mounted read-only; pip cache is persisted in a named volume.
+DOCKER_PY_RUN := docker run --rm \
+	-v "$(ROOT_DIR)/orchestrator:/workspace:ro" \
+	-v iot-sim-pipcache:/root/.cache/pip \
+	-w /workspace \
+	$(DOCKER_PY_IMAGE)
 
 # ── Dependencies ────────────────────────────────────────────────────────────
 
-GOLANGCI_LINT_VERSION ?= v1.64.8
 GOLANGCI_LINT        := $(shell go env GOPATH)/bin/golangci-lint
 
 GOIMPORTS := $(shell go env GOPATH)/bin/goimports
@@ -79,11 +98,70 @@ py-fmt:
 	cd orchestrator && pipenv run ruff format .
 	cd orchestrator && pipenv run ruff check --fix .
 
-# ── Docker ───────────────────────────────────────────────────────────────────
+# ── Docker — image builds & compose ─────────────────────────────────────────
 
 docker-build:
 	docker build -f deployments/Dockerfile.runtime -t iot-runtime:dev .
 	docker build -f deployments/Dockerfile.orchestrator -t iot-orchestrator:dev .
+
+docker-up:
+	docker compose -f deployments/docker-compose.yaml up -d
+
+docker-down:
+	docker compose -f deployments/docker-compose.yaml down
+
+docker-logs:
+	docker compose -f deployments/docker-compose.yaml logs -f
+
+# ── Docker — Go: test / lint / fmt ──────────────────────────────────────────
+# These targets run inside a plain golang image — no local Go install needed.
+
+docker-go-test:
+	$(DOCKER_GO_RUN) sh -c "go test ./..."
+
+docker-go-lint:
+	$(DOCKER_GO_RUN) sh -c "\
+		go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) && \
+		golangci-lint run ./..."
+
+# fmt writes back to the host via a rw mount (goimports + gofmt).
+docker-go-fmt:
+	docker run --rm \
+		-v "$(ROOT_DIR)/device-runtime:/workspace" \
+		-w /workspace \
+		$(DOCKER_GO_IMAGE) sh -c "\
+			go install golang.org/x/tools/cmd/goimports@latest && \
+			goimports -w -local github.com/virtual-iot-simulator ./... && \
+			gofmt -w ./..."
+
+# ── Docker — Python: test / lint / fmt ──────────────────────────────────────
+# These targets run inside a plain python image — no pipenv needed on the host.
+
+DOCKER_PY_INSTALL := pip install --quiet --no-cache-dir \
+	grpcio grpcio-tools protobuf typer pydantic pyyaml rich fastapi \
+	"uvicorn[standard]" pytest pytest-asyncio httpx ruff
+
+docker-py-test:
+	$(DOCKER_PY_RUN) sh -c "$(DOCKER_PY_INSTALL) && pytest tests/ -v"
+
+docker-py-lint:
+	$(DOCKER_PY_RUN) sh -c "\
+		pip install --quiet --no-cache-dir ruff && \
+		ruff format --check . && \
+		ruff check ."
+
+# fmt writes back to the host via a rw mount.
+docker-py-fmt:
+	docker run --rm \
+		-v "$(ROOT_DIR)/orchestrator:/workspace" \
+		-w /workspace \
+		$(DOCKER_PY_IMAGE) sh -c "\
+			pip install --quiet --no-cache-dir ruff && \
+			ruff format . && \
+			ruff check --fix ."
+
+# Run all Docker-based checks (no local toolchain required).
+docker-lint: docker-go-lint docker-py-lint
 
 # ── All ──────────────────────────────────────────────────────────────────────
 
