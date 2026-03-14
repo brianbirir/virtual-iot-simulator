@@ -1,0 +1,24 @@
+syntax = "proto3";
+package simulator.v1;
+option go_package = "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1;simulatorv1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "simulator/v1/common.proto";
+
+message DeviceProfile {
+  string device_id = 1;
+  string device_type = 2;
+  map<string, string> labels = 3;
+  DeviceState state = 4;
+}
+
+message DeviceSpec {
+  string device_id = 1;
+  string device_type = 2;
+  map<string, string> labels = 3;
+  google.protobuf.Duration telemetry_interval = 4;
+  google.protobuf.Struct behavior_params = 5;
+  string protocol = 6;
+  string topic_template = 7;
+}

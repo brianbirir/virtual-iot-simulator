@@ -1,0 +1,23 @@
+syntax = "proto3";
+package simulator.v1;
+option go_package = "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1;simulatorv1";
+
+import "google/protobuf/timestamp.proto";
+
+message TelemetryPoint {
+  string device_id = 1;
+  string metric_name = 2;
+  oneof value {
+    double double_value = 3;
+    int64 int_value = 4;
+    string string_value = 5;
+    bool bool_value = 6;
+  }
+  google.protobuf.Timestamp timestamp = 7;
+  map<string, string> tags = 8;
+}
+
+message TelemetryBatch {
+  repeated TelemetryPoint points = 1;
+  int64 sequence_number = 2;
+}

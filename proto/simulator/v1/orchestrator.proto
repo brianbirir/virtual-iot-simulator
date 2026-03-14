@@ -1,0 +1,133 @@
+syntax = "proto3";
+package simulator.v1;
+option go_package = "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1;simulatorv1";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "simulator/v1/device.proto";
+import "simulator/v1/telemetry.proto";
+
+service DeviceRuntimeService {
+  // Lifecycle
+  rpc SpawnDevices(SpawnDevicesRequest) returns (SpawnDevicesResponse);
+  rpc StopDevices(StopDevicesRequest) returns (StopDevicesResponse);
+  rpc GetFleetStatus(GetFleetStatusRequest) returns (FleetStatus);
+
+  // Real-time control
+  rpc InjectFault(InjectFaultRequest) returns (google.protobuf.Empty);
+  rpc UpdateDeviceBehavior(UpdateDeviceBehaviorRequest) returns (google.protobuf.Empty);
+
+  // Observation
+  rpc StreamTelemetry(StreamTelemetryRequest) returns (stream TelemetryBatch);
+  rpc StreamEvents(StreamEventsRequest) returns (stream DeviceEvent);
+
+  // Health
+  rpc GetRuntimeStatus(google.protobuf.Empty) returns (RuntimeStatus);
+}
+
+// --- Request/Response Messages ---
+// DeviceSpec and DeviceProfile are defined in device.proto.
+// TelemetryBatch is defined in telemetry.proto.
+
+message SpawnDevicesRequest {
+  repeated DeviceSpec specs = 1;
+  string scenario_id = 2;
+}
+
+message SpawnDevicesResponse {
+  int32 spawned = 1;
+  repeated string failed_device_ids = 2;
+  map<string, string> failure_reasons = 3;
+}
+
+message DeviceSelector {
+  oneof selector {
+    DeviceIdList device_ids = 1;
+    string label_selector = 2;
+  }
+}
+
+message DeviceIdList {
+  repeated string ids = 1;
+}
+
+message StopDevicesRequest {
+  DeviceSelector selector = 1;
+  bool graceful = 2;
+}
+
+message StopDevicesResponse {
+  int32 stopped = 1;
+  repeated string failed_device_ids = 2;
+}
+
+message GetFleetStatusRequest {
+  DeviceSelector selector = 1;
+}
+
+message FleetStatus {
+  int32 total_devices = 1;
+  map<string, int32> by_state = 2;
+  map<string, int32> by_type = 3;
+  repeated DeviceProfile devices = 4;
+}
+
+message InjectFaultRequest {
+  DeviceSelector selector = 1;
+  FaultType fault_type = 2;
+  google.protobuf.Duration duration = 3;
+  google.protobuf.Struct parameters = 4;
+}
+
+enum FaultType {
+  FAULT_TYPE_UNSPECIFIED = 0;
+  FAULT_TYPE_DISCONNECT = 1;
+  FAULT_TYPE_LATENCY_SPIKE = 2;
+  FAULT_TYPE_DATA_CORRUPTION = 3;
+  FAULT_TYPE_BATTERY_DRAIN = 4;
+  FAULT_TYPE_CLOCK_DRIFT = 5;
+}
+
+message UpdateDeviceBehaviorRequest {
+  DeviceSelector selector = 1;
+  google.protobuf.Struct behavior_params = 2;
+}
+
+message StreamTelemetryRequest {
+  DeviceSelector selector = 1;
+  int32 batch_size = 2;
+  google.protobuf.Duration flush_interval = 3;
+}
+
+message StreamEventsRequest {
+  DeviceSelector selector = 1;
+}
+
+message DeviceEvent {
+  string device_id = 1;
+  DeviceEventType event_type = 2;
+  string message = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  map<string, string> metadata = 5;
+}
+
+enum DeviceEventType {
+  DEVICE_EVENT_TYPE_UNSPECIFIED = 0;
+  DEVICE_EVENT_TYPE_SPAWNED = 1;
+  DEVICE_EVENT_TYPE_CONNECTED = 2;
+  DEVICE_EVENT_TYPE_DISCONNECTED = 3;
+  DEVICE_EVENT_TYPE_ERROR = 4;
+  DEVICE_EVENT_TYPE_FAULT_INJECTED = 5;
+  DEVICE_EVENT_TYPE_STOPPED = 6;
+}
+
+message RuntimeStatus {
+  int32 active_devices = 1;
+  int32 goroutine_count = 2;
+  int64 messages_sent_total = 3;
+  double messages_per_second = 4;
+  int64 memory_bytes = 5;
+  google.protobuf.Duration uptime = 6;
+}

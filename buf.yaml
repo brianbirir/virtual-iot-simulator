@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # Domain types (FleetStatus, TelemetryBatch, DeviceEvent, RuntimeStatus) are
+    # reusable messages, not just RPC wrappers — exempting response naming rule.
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_STANDARD_NAME
+    # google.protobuf.Empty is intentionally reused for fire-and-forget RPCs.
+    - RPC_REQUEST_RESPONSE_UNIQUE
+breaking:
+  use:
+    - FILE

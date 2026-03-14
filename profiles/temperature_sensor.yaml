@@ -1,0 +1,19 @@
+type: temperature_sensor
+protocol: console
+topic_template: "devices/{device_id}/telemetry"
+telemetry_interval: 5s
+telemetry_fields:
+  temperature:
+    type: gaussian
+    mean: 22.0
+    stddev: 1.0
+  humidity:
+    type: gaussian
+    mean: 55.0
+    stddev: 5.0
+  battery:
+    type: static
+    value: 100.0
+labels:
+  category: environmental
+  firmware: "1.2.0"
