@@ -191,21 +191,32 @@ The orchestrator is the control plane. It doesn't simulate devices — it tells 
 - Manage fleet lifecycle (spawn, stop, query) via gRPC calls to one or more runtime instances.
 - Execute scenario scripts that choreograph fleet behaviour over time.
 - Route requests to the correct runtime instance using consistent hashing on `device_id`.
-- Provide a CLI for interactive and scripted use.
+- Provide a **CLI** for interactive and scripted use.
+- Provide a **REST API** (FastAPI) for programmatic and dashboard integration.
 
-**Key classes:**
+**Key classes (Phase 1 implemented):**
 
 ```
-ProfileRegistry        — Loads YAML profiles, validates via Pydantic, caches.
-RuntimeClient          — Typed wrapper around generated gRPC stub.
-RuntimePool            — Manages multiple RuntimeClient instances with
-                         consistent-hash routing for scale-out.
+RuntimeClient          — Async typed wrapper around generated gRPC stub.
+                         Supports spawn, stop, status, runtime_status,
+                         stream_telemetry.
+config.py              — load_profile() / load_profile_specs() — loads and
+                         validates YAML profiles via Pydantic, converts to
+                         DeviceSpec protos.
+CLI (cli.py)           — typer commands: spawn, stop, status, stream, serve.
+REST API (api.py)      — FastAPI app: POST /spawn, POST /stop, GET /status,
+                         GET /stream (SSE), GET /health.
+```
+
+**Planned (Phase 3+):**
+
+```text
+ProfileRegistry        — Caching profile loader.
+RuntimePool            — Consistent-hash routing across multiple runtime instances.
 ScenarioContext        — Injected into scenario scripts; exposes spawn/stop/
                          fault/wait primitives.
 ScenarioRunner         — Discovers and executes scenario scripts.
-SimClock               — Simulation clock with configurable speed multiplier
-                         (1x = real-time, 60x = 1 second = 1 simulated minute).
-CLI                    — typer/click commands wrapping the above.
+SimClock               — Simulation clock with configurable speed multiplier.
 ```
 
 **Profile validation schema** (Pydantic):
@@ -1014,24 +1025,60 @@ Example: 500K devices at 5s intervals
 
 ### 13.1 CLI Commands
 
+**Phase 1 (implemented):**
+
+```text
+iot-sim spawn  --profile <path> --count <N> [--runtime host:port]
+iot-sim stop   --all | --type <device_type>  [--runtime host:port]
+iot-sim status [--runtime host:port]
+iot-sim stream [--type <device_type>] [--ids id1,id2] [--runtime host:port]
+iot-sim serve  [--host 0.0.0.0] [--port 8000] [--reload]
 ```
-iot-sim spawn --profile <path> --count <N> [--labels key=val,...]
-iot-sim stop --all | --type <device_type> | --label <key=val>
-iot-sim status [--type <device_type>]
-iot-sim stream [--type <device_type>] [--batch-size <N>]
-iot-sim fault inject --type <fault> --selector <label=val> --duration <dur> [--params key=val,...]
+
+**Planned (Phase 3+):**
+
+```text
+iot-sim fault inject --type <fault> --selector <label=val> --duration <dur>
 iot-sim scenario run <script.py> [--time-multiplier <N>]
 iot-sim scenario list
 iot-sim runtime status
 ```
 
-### 13.2 gRPC Service
+### 13.2 REST API (FastAPI)
+
+The API server is started with `iot-sim serve`. Interactive docs are available at `/docs` (Swagger UI) and `/redoc`.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `POST` | `/api/v1/devices/spawn` | Spawn devices from a profile YAML |
+| `POST` | `/api/v1/devices/stop` | Stop devices by type or all |
+| `GET` | `/api/v1/devices/status` | Fleet + runtime status |
+| `GET` | `/api/v1/devices/stream` | Live telemetry as SSE (`text/event-stream`) |
+| `GET` | `/api/v1/health` | Health check |
+
+**Spawn request:**
+
+```json
+{ "profile": "profiles/temperature_sensor.yaml", "count": 10, "runtime": "localhost:50051" }
+```
+
+**Stop request:**
+
+```json
+{ "all": true }
+{ "device_type": "temperature_sensor" }
+```
+
+**SSE stream event** (`GET /api/v1/devices/stream?device_type=temperature_sensor`):
+
+```text
+data: {"device_id": "temperature_sensor-0001", "metric": "temperature", "value": 22.4, "timestamp": "2026-03-14T10:23:45"}
+data: {"device_id": "temperature_sensor-0002", "metric": "humidity", "value": 58.1, "timestamp": "2026-03-14T10:23:45"}
+```
+
+### 13.3 gRPC Service
 
 See Section 5.6 for the full `DeviceRuntimeService` definition. The complete proto files are in `proto/simulator/v1/`.
-
-### 13.3 Admin HTTP
-
-See Section 9.3 for endpoint listing.
 
 ---
 

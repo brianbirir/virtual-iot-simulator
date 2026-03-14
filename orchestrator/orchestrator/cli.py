@@ -158,5 +158,29 @@ def _point_value(pt: object) -> str:
     return "null"
 
 
+# ---------------------------------------------------------------------------
+# serve
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host", "-H", help="Bind address"),
+    port: int = typer.Option(8000, "--port", "-p", help="TCP port"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev only)"),
+) -> None:
+    """Start the FastAPI REST API server."""
+    import uvicorn
+
+    console.print(f"[green]Starting IoT Simulator API on http://{host}:{port}[/green]")
+    console.print(f"[dim]Docs: http://{host}:{port}/docs[/dim]")
+    uvicorn.run(
+        "orchestrator.api:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )
+
+
 if __name__ == "__main__":
     app()
