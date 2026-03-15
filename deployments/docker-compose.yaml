@@ -29,6 +29,41 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ── Orchestrator (Python/FastAPI) ─────────────────────────────────────────
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.orchestrator
+    command:
+      - serve
+      - --host=0.0.0.0
+      - --port=8000
+    ports:
+      - "8000:8000"
+    environment:
+      IOT_SIM_RUNTIME: runtime:50051
+    depends_on:
+      runtime:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Frontend (React/nginx) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.frontend
+    ports:
+      - "3001:80"
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ── MQTT Broker ───────────────────────────────────────────────────────────
   mosquitto:
     image: eclipse-mosquitto:2
