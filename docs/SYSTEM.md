@@ -23,6 +23,7 @@
    - 5.4 Protocol Adapters
    - 5.5 Scenario Engine
    - 5.6 Service Contract (gRPC/Protobuf)
+   - 5.7 Frontend (React)
 6. [Data Models](#6-data-models)
 7. [Concurrency & Scaling Model](#7-concurrency--scaling-model)
 8. [Fault Injection Framework](#8-fault-injection-framework)
@@ -42,7 +43,7 @@
 
 This document describes the design of a large-scale IoT device simulator capable of emulating hundreds of thousands of concurrent virtual devices. The simulator generates realistic telemetry data across multiple IoT protocols (MQTT, AMQP, HTTP, CoAP) and publishes it to real backend infrastructure for testing, load validation, and development purposes.
 
-The system is split into two services: a **Python-based Simulation Orchestrator** for configuration, fleet management, and scenario scripting, and a **Go-based Device Runtime** for high-performance concurrent device simulation. They communicate via a **gRPC contract** defined in Protocol Buffers.
+The system is composed of three services: a **Python-based Simulation Orchestrator** for configuration, fleet management, and scenario scripting; a **Go-based Device Runtime** for high-performance concurrent device simulation; and a **React-based Frontend** that provides a web dashboard for fleet control and live telemetry observation. The orchestrator and runtime communicate via a **gRPC contract** defined in Protocol Buffers. The frontend consumes the orchestrator's REST API and Server-Sent Events stream.
 
 The design prioritises realistic device behaviour (not just load generation), deterministic replay for debugging, and a scaling path from single-process development to distributed cloud-native deployment.
 
@@ -59,6 +60,7 @@ The design prioritises realistic device behaviour (not just load generation), de
 | **Phase 5** | Prometheus metrics (`sim_devices_active`, `sim_messages_sent_total`, `sim_publish_latency_seconds`, `sim_device_errors_total`, `sim_backpressure_drops_total`, `sim_faults_injected_total`) · `/metrics` endpoint on admin HTTP server · `--master-seed`, `--mqtt-url`, `--http-endpoint`, `--amqp-url` runtime flags | ✅ Complete |
 | **Phase 6** | Multi-stage Dockerfiles (Go runtime + Python orchestrator) · Docker Compose stack: runtime, Mosquitto, Prometheus, Grafana · Mosquitto config · Prometheus scrape config · Grafana datasource + dashboard provisioning · Non-root (`iotsim`) user in both images | ✅ Complete |
 | **Phase 7** | MQTT connection pool (`MQTTPool`, `--mqtt-pool-size`) · Backpressure `slow_down` mode (doubles tick interval at >80% queue fill, restores at <50%) + `sim_backpressure_slowdowns_total` / `sim_publish_queue_depth` metrics · Enhanced graceful shutdown (`sync.WaitGroup` + 5 s progress logging) · `RunID` (auto-generated hex or `--run-id` flag) logged at startup · Deterministic replay test (`replay_test.go`) · Example scenario (`ramp_up.py`) · golangci-lint + ruff lint/format tooling (`make go-lint`, `make py-lint`, `make go-fmt`, `make py-fmt`) | ✅ Complete |
+| **Phase 8** | React + TypeScript frontend (Vite, MUI, TanStack Query) · Dashboard page (fleet stats, runtime details, auto-refresh) · Devices page (spawn/stop forms, fleet summary) · Telemetry page (SSE stream, scrolling event table) · Multi-stage `Dockerfile.frontend` + nginx reverse proxy · `orchestrator` and `frontend` services added to Docker Compose | ✅ Complete |
 
 ---
 
@@ -102,7 +104,7 @@ A simulator that acts as a **digital twin factory** — spawning virtual devices
 - **Cloud-to-device command handling beyond stub responses** — the simulator acknowledges C2D commands but doesn't implement full device-side business logic.
 - **Physical device emulation** — no hardware-in-the-loop, no radio-layer simulation.
 - **Built-in IoT backend** — the simulator targets *external* backends; it doesn't include its own MQTT broker, time-series DB, or rules engine.
-- **GUI** — CLI and API only. Grafana dashboards provide visualisation.
+- **Advanced GUI** — The frontend covers fleet control and live telemetry. Complex analytical visualisation is delegated to Grafana dashboards.
 - **Multi-tenancy** — single-tenant; one simulator instance serves one test scenario.
 
 ---
@@ -593,6 +595,51 @@ Request → Recovery (panic → INTERNAL) → Logging (zerolog) → Metrics (Pro
 Request → Request-ID injection → Retry policy (UNAVAILABLE, 3 attempts, exp backoff) → Channel
 ```
 
+### 5.7 Frontend (React)
+
+The frontend is a single-page application served by nginx. It communicates exclusively with the orchestrator REST API — it has no direct knowledge of the Go runtime or gRPC layer.
+
+**Technology stack:**
+
+| Layer | Library |
+| ----- | ------- |
+| Framework | React 18 + TypeScript (Vite) |
+| UI components | MUI v6 (Material Design) |
+| Server state | TanStack Query v5 |
+| Routing | React Router v6 |
+| Container | nginx 1.27-alpine (reverse proxy + static serving) |
+
+**Pages:**
+
+| Page | Route | Description |
+| ---- | ----- | ----------- |
+| Dashboard | `/` | Four stat cards (total devices, active devices, memory, uptime) · fleet-by-state chip grid · fleet-by-type list · runtime details; all auto-refresh every 5 s |
+| Devices | `/devices` | Spawn form (profile path, count, runtime address) · Stop form (all / by device type) · live fleet summary; mutations invalidate the status query |
+| Telemetry | `/telemetry` | Device type + ID filters · SSE connect/disconnect · scrolling event table (max 500 rows) with auto-scroll toggle |
+
+**API layer (`src/api/`):**
+
+```
+types.ts          — TypeScript interfaces mirroring FastAPI request/response models
+client.ts         — fetch-based functions for each endpoint; throws on non-2xx with
+                    the FastAPI `detail` string
+hooks/
+  useHealth.ts        — GET /health, refetch every 30 s
+  useStatus.ts        — GET /api/v1/devices/status, refetch every 5 s
+  useSpawnDevices.ts  — POST /api/v1/devices/spawn mutation
+  useStopDevices.ts   — POST /api/v1/devices/stop mutation
+  useTelemetryStream.ts — EventSource wrapper; parses both single-point and
+                          batch JSON event payloads; cleans up on unmount
+```
+
+**Nginx reverse proxy** (`deployments/nginx.frontend.conf`):
+
+- `location /` → SPA fallback (`try_files $uri $uri/ /index.html`)
+- `location /api/` → `proxy_pass http://orchestrator:8000/api/` with `proxy_buffering off` to allow SSE to stream through
+- `location /health` → `proxy_pass http://orchestrator:8000/health`
+
+**Build** (`deployments/Dockerfile.frontend`): multi-stage — Node 20 Alpine builds the Vite app, nginx Alpine serves the `dist/` output. The container exposes port 80; Docker Compose maps it to host port 3001.
+
 ---
 
 ## 6. Data Models
@@ -928,13 +975,15 @@ Pre-built dashboard with panels for: active devices (gauge by type), messages/se
 
 ```yaml
 services:
-  runtime:    # Go device runtime — ports 50051 (gRPC) + 8080 (admin/metrics)
-  mosquitto:  # eclipse-mosquitto:2 — port 1883
-  prometheus: # prom/prometheus — port 9090, scrapes runtime:8080/metrics every 15 s
-  grafana:    # grafana/grafana — port 3000, auto-provisioned datasource + dashboard
+  mosquitto:    # eclipse-mosquitto:2 — port 1883
+  runtime:      # Go device runtime — ports 50051 (gRPC) + 8080 (admin/metrics)
+  orchestrator: # Python FastAPI — port 8000; command: iot-sim serve
+  frontend:     # React/nginx — port 3001; proxies /api + /health to orchestrator
+  prometheus:   # prom/prometheus — port 9090, scrapes runtime:8080/metrics every 15 s
+  grafana:      # grafana/grafana — port 3000, auto-provisioned datasource + dashboard
 ```
 
-Single command: `docker compose -f deployments/docker-compose.yaml up -d`. Both images run as the non-root `iotsim` user. Grafana dashboards and Prometheus data are persisted via named volumes (`prometheus_data`, `grafana_data`). The Python orchestrator is intended to be run natively (`pipenv run iot-sim …`) against the Dockerised runtime, but `Dockerfile.orchestrator` is provided for fully containerised deployments.
+Single command: `docker compose -f deployments/docker-compose.yaml up --build`. Startup order is enforced via healthcheck dependencies: `mosquitto` → `runtime` → `orchestrator` → `frontend`. Both custom images run as the non-root `iotsim` user. Grafana dashboards and Prometheus data are persisted via named volumes (`prometheus_data`, `grafana_data`).
 
 ### 10.2 Production / Cloud-Native (Kubernetes)
 
@@ -975,9 +1024,10 @@ Single command: `docker compose -f deployments/docker-compose.yaml up -d`. Both 
 ### 10.3 Container Images
 
 | Image | Base | Size (est.) | Build |
-|-------|------|-------------|-------|
+| ----- | ---- | ----------- | ----- |
 | `iot-sim-runtime` | `alpine:3.19` | ~15 MB | Multi-stage: Go build → scratch/alpine |
 | `iot-sim-orchestrator` | `python:3.12-slim` | ~150 MB | pip install from pyproject.toml |
+| `iot-sim-frontend` | `nginx:1.27-alpine` | ~30 MB | Multi-stage: Node 20 Vite build → nginx static serve |
 
 ---
 

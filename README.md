@@ -2,10 +2,11 @@
 
 A large-scale IoT device simulator capable of running thousands of concurrent virtual devices that generate realistic telemetry and publish it over configurable protocols.
 
-The system is split into two services that communicate via gRPC:
+The system is composed of three services:
 
 - **Device Runtime** (Go) — the data plane. Runs one goroutine per device, generates telemetry, and streams it over the configured protocol adapter.
 - **Simulation Orchestrator** (Python) — the control plane. Loads device profiles, manages the fleet lifecycle, and exposes both a CLI and a REST API.
+- **Frontend** (React + TypeScript) — a web dashboard for controlling the fleet and observing live telemetry via the orchestrator REST API.
 
 > **Status:** All phases complete. See [docs/SYSTEM.md](docs/SYSTEM.md) for the full design document.
 
@@ -111,6 +112,10 @@ flowchart TB
         Devices --> BC
     end
 
+    subgraph Frontend["Frontend (React)  :3001"]
+        UI["Dashboard · Devices · Telemetry\nnginx → proxy /api"]
+    end
+
     subgraph Infra["Infrastructure"]
         MQTT["Mosquitto\n:1883"]
         PROM["Prometheus\n:9090"]
@@ -119,6 +124,7 @@ flowchart TB
         HTTP["HTTP target\n(any)"]
     end
 
+    UI -->|"REST / SSE"| API
     POOL -->|gRPC| GRPC
     PUB -->|MQTT| MQTT
     PUB -->|AMQP| RABBIT
@@ -149,9 +155,16 @@ flowchart TB
 │   ├── tests/
 │   ├── Pipfile              # Pipenv dependency manifest
 │   └── pyproject.toml       # Package metadata + entry points
+├── frontend/                # React + TypeScript web dashboard
+│   ├── src/
+│   │   ├── api/             # TanStack Query hooks + fetch client
+│   │   ├── components/      # Shared MUI layout components
+│   │   └── pages/           # Dashboard, Devices, Telemetry pages
+│   ├── package.json
+│   └── vite.config.ts       # Dev server with /api proxy to :8000
 ├── proto/simulator/v1/      # Protobuf definitions (source of truth)
 ├── profiles/                # Device profile YAML files
-├── deployments/             # Docker Compose + Kubernetes manifests
+├── deployments/             # Docker Compose, Dockerfiles, nginx config
 ├── docs/SYSTEM.md           # Full technical design document
 ├── IMPLEMENTATION_PLAN.md   # Phase-by-phase implementation plan
 ├── buf.yaml                 # Buf lint/breaking-change config
@@ -164,8 +177,10 @@ flowchart TB
 
 | Tool | Version | Purpose |
 | ---- | ------- | ------- |
-| Go | ≥ 1.21 | Device runtime |
-| Python | ≥ 3.12 | Orchestrator |
+| Docker + Compose | ≥ 24 | Run the full stack |
+| Go | ≥ 1.21 | Device runtime (local dev) |
+| Python | ≥ 3.12 | Orchestrator (local dev) |
+| Node.js | ≥ 20 | Frontend (local dev) |
 | pipenv | latest | Python dependency management |
 | buf | latest | Protobuf linting and code generation |
 
@@ -173,7 +188,30 @@ flowchart TB
 
 ## Quick Start
 
-### 1. Generate protobuf code
+### Docker (recommended)
+
+The entire stack — runtime, orchestrator, frontend, MQTT broker, Prometheus, and Grafana — starts with a single command:
+
+```bash
+docker compose -f deployments/docker-compose.yaml up --build
+```
+
+| Service | URL | Description |
+| ------- | --- | ----------- |
+| Frontend | [http://localhost:3001](http://localhost:3001) | React dashboard |
+| Orchestrator API | [http://localhost:8000](http://localhost:8000) | FastAPI + Swagger UI at `/docs` |
+| Runtime admin | [http://localhost:8080](http://localhost:8080) | `/healthz` · `/readyz` · `/metrics` |
+| Grafana | [http://localhost:3000](http://localhost:3000) | Dashboards (admin / admin) |
+| Prometheus | [http://localhost:9090](http://localhost:9090) | Metrics explorer |
+
+Startup order is enforced via healthcheck dependencies:
+`mosquitto` → `runtime` → `orchestrator` → `frontend`
+
+---
+
+### Local Development
+
+#### 1. Generate protobuf code
 
 ```bash
 make proto-gen
