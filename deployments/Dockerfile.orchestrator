@@ -1,30 +1,47 @@
-FROM python:3.12-slim
+# ── Stage 1: build wheel ─────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
 
-# Create non-root user before any file operations
-RUN groupadd -r iotsim && useradd -r -g iotsim -d /app -s /sbin/nologin iotsim
+WORKDIR /build
 
-WORKDIR /app
+# Install build backend
+RUN pip install --no-cache-dir hatchling
 
-# Install dependencies first (layer cache)
+# Copy package metadata and source
 COPY orchestrator/pyproject.toml orchestrator/Pipfile ./
-RUN pip install --no-cache-dir \
-    grpcio>=1.62.0 \
-    grpcio-tools>=1.62.0 \
-    protobuf>=4.25.0 \
+COPY orchestrator/ .
+
+# Build a wheel so the final stage only needs to pip-install it
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir /wheels .
+
+# Pre-download all runtime dependencies as wheels too
+RUN pip wheel --no-cache-dir --wheel-dir /wheels \
+    "grpcio>=1.62.0" \
+    "grpcio-tools>=1.62.0" \
+    "protobuf>=4.25.0" \
     "typer>=0.12.0" \
     "pydantic>=2.6.0" \
-    pyyaml>=6.0.1 \
+    "pyyaml>=6.0.1" \
     "rich>=13.7.0" \
     "fastapi>=0.111.0" \
     "uvicorn[standard]>=0.29.0"
 
-# Copy generated proto stubs and package source
-COPY orchestrator/ .
+# ── Stage 2: runtime image ────────────────────────────────────────────────────
+FROM python:3.12-slim
 
-# Install the package so the iot-sim entry point is available
-RUN pip install --no-cache-dir .
+# Create non-root user
+RUN groupadd -r iotsim && useradd -r -g iotsim -d /app -s /sbin/nologin iotsim
 
-# Device profiles and scenario scripts are mounted or copied here
+WORKDIR /app
+
+# Install all wheels (no network access needed)
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links /wheels /wheels/*.whl \
+    && rm -rf /wheels
+
+# Copy generated proto stubs (needed at runtime via PYTHONPATH)
+COPY orchestrator/gen ./gen
+
+# Device profiles and scenario scripts
 COPY profiles/ /profiles/
 COPY orchestrator/scenarios/ /scenarios/
 
@@ -35,7 +52,7 @@ USER iotsim
 # Default runtime endpoint (override with -e IOT_SIM_RUNTIME=host:port)
 ENV IOT_SIM_RUNTIME=runtime:50051
 # Make the generated proto stubs importable as `gen.*`
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app:/app/gen/python
 
 EXPOSE 8000
 

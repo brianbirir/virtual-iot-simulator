@@ -101,9 +101,9 @@ py-fmt:
 # ── Docker — image builds & compose ─────────────────────────────────────────
 
 docker-build:
-	docker build -f deployments/Dockerfile.runtime -t iot-runtime:dev .
-	docker build -f deployments/Dockerfile.orchestrator -t iot-orchestrator:dev .
-	docker build -f deployments/Dockerfile.frontend -t iot-frontend:dev .
+	docker build -f deployments/Dockerfile.runtime -t iot-simulator-runtime:latest .
+	docker build -f deployments/Dockerfile.orchestrator -t iot-simulator-orchestrator:latest .
+	docker build -f deployments/Dockerfile.frontend -t iot-simulator-frontend:latest .
 
 docker-up:
 	docker compose -f deployments/docker-compose.yaml up -d
