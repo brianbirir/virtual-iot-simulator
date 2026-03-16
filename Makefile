@@ -103,6 +103,7 @@ py-fmt:
 docker-build:
 	docker build -f deployments/Dockerfile.runtime -t iot-runtime:dev .
 	docker build -f deployments/Dockerfile.orchestrator -t iot-orchestrator:dev .
+	docker build -f deployments/Dockerfile.frontend -t iot-frontend:dev .
 
 docker-up:
 	docker compose -f deployments/docker-compose.yaml up -d

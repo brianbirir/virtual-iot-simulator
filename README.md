@@ -238,7 +238,28 @@ cd orchestrator
 pipenv install
 ```
 
-### 4. Control devices via CLI
+### 4. Install Frontend dependencies
+
+If you have Node.js ≥ 20 installed locally:
+
+```bash
+cd frontend
+npm install
+```
+
+**If Node.js is not installed locally**, use Docker to install packages or generate the lock file:
+
+```bash
+# Generate / update package-lock.json
+docker run --rm -v "$(pwd)/frontend:/app" -w /app node:20-alpine npm install
+
+# Install packages only (no node_modules on host, lock file only)
+docker run --rm -v "$(pwd)/frontend:/app" -w /app node:20-alpine npm install --package-lock-only
+```
+
+This is also required when adding new packages so that `package-lock.json` stays in sync before running `make docker-build`.
+
+### 5. Control devices via CLI
 
 ```bash
 # Spawn 5 temperature sensors
@@ -254,7 +275,7 @@ pipenv run iot-sim stream --type temperature_sensor
 pipenv run iot-sim stop --all
 ```
 
-### 5. Control devices via the REST API
+### 6. Control devices via the REST API
 
 ```bash
 # Start the API server (default: http://localhost:8000)
