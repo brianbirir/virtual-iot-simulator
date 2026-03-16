@@ -21,6 +21,9 @@ RUN pip install --no-cache-dir \
 # Copy generated proto stubs and package source
 COPY orchestrator/ .
 
+# Install the package so the iot-sim entry point is available
+RUN pip install --no-cache-dir .
+
 # Device profiles and scenario scripts are mounted or copied here
 COPY profiles/ /profiles/
 COPY orchestrator/scenarios/ /scenarios/
@@ -31,6 +34,8 @@ USER iotsim
 
 # Default runtime endpoint (override with -e IOT_SIM_RUNTIME=host:port)
 ENV IOT_SIM_RUNTIME=runtime:50051
+# Make the generated proto stubs importable as `gen.*`
+ENV PYTHONPATH=/app
 
 EXPOSE 8000
 
