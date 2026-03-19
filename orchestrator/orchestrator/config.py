@@ -7,6 +7,7 @@ Pydantic and converts them to protobuf DeviceSpec messages.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -137,9 +138,18 @@ def profile_to_spec(profile: DeviceProfileConfig, device_id: str) -> DeviceSpec:
 # ---------------------------------------------------------------------------
 
 
+_PROFILES_DIR = Path(os.environ.get("IOT_SIM_PROFILES_DIR", "/profiles"))
+
+
 def load_profile(path: str | Path) -> DeviceProfileConfig:
-    """Load and validate a device profile YAML file."""
-    with open(path) as f:
+    """Load and validate a device profile YAML file.
+
+    Relative paths are resolved against IOT_SIM_PROFILES_DIR (default: /profiles).
+    """
+    p = Path(path)
+    if not p.is_absolute():
+        p = _PROFILES_DIR / p
+    with open(p) as f:
         raw = yaml.safe_load(f)
     return DeviceProfileConfig.model_validate(raw)
 

@@ -8,8 +8,7 @@ import {
   Chip,
   CircularProgress,
   FormControlLabel,
-  Grid,
-  InputAdornment,
+  Grid2 as Grid,
   List,
   ListItem,
   ListItemText,
@@ -42,14 +41,11 @@ interface SnackState {
 
 export default function DevicesPage() {
   // Spawn form
-  const [profile, setProfile] = useState('profiles/temperature_sensor.yaml');
+  const [profile, setProfile] = useState('temperature_sensor.yaml');
   const [count, setCount] = useState(10);
-  const [spawnRuntime, setSpawnRuntime] = useState('localhost:50051');
-
   // Stop form
   const [stopMode, setStopMode] = useState<'all' | 'type'>('all');
   const [deviceType, setDeviceType] = useState('');
-  const [stopRuntime, setStopRuntime] = useState('localhost:50051');
 
   const [snack, setSnack] = useState<SnackState>({ open: false, message: '', severity: 'success' });
 
@@ -63,11 +59,7 @@ export default function DevicesPage() {
 
   async function handleSpawn() {
     try {
-      const res = await spawnMutation.mutateAsync({
-        profile,
-        count,
-        runtime: spawnRuntime || undefined,
-      });
+      const res = await spawnMutation.mutateAsync({ profile, count });
       const failMsg = res.failed.length ? `, ${res.failed.length} failed` : '';
       showSnack(`Spawned ${res.spawned} device(s)${failMsg}`, 'success');
     } catch (e) {
@@ -79,8 +71,8 @@ export default function DevicesPage() {
     try {
       const req =
         stopMode === 'all'
-          ? { all_devices: true, runtime: stopRuntime || undefined }
-          : { device_type: deviceType, runtime: stopRuntime || undefined };
+          ? { all_devices: true }
+          : { device_type: deviceType };
       const res = await stopMutation.mutateAsync(req);
       showSnack(`Stopped ${res.stopped} device(s)`, 'success');
     } catch (e) {
@@ -96,11 +88,11 @@ export default function DevicesPage() {
 
       <Grid container spacing={2} mb={3}>
         {/* Spawn card */}
-        <Grid item xs={12} md={6}>
+        <Grid size={{ xs: 12, md: 6 }}>
           <Card>
             <CardHeader
               title="Spawn Devices"
-              titleTypographyProps={{ variant: 'subtitle1', fontWeight: 700 }}
+              slotProps={{ title: { variant: 'subtitle1', fontWeight: 700 } }}
             />
             <CardContent sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <TextField
@@ -109,8 +101,8 @@ export default function DevicesPage() {
                 onChange={(e) => setProfile(e.target.value)}
                 fullWidth
                 size="small"
-                placeholder="profiles/temperature_sensor.yaml"
-                helperText="Relative path to the device YAML profile"
+                placeholder="temperature_sensor.yaml"
+                helperText="Profile filename (resolved from the server's profiles directory)"
               />
               <TextField
                 label="Device Count"
@@ -119,24 +111,7 @@ export default function DevicesPage() {
                 onChange={(e) => setCount(Math.max(1, parseInt(e.target.value, 10) || 1))}
                 fullWidth
                 size="small"
-                inputProps={{ min: 1 }}
-              />
-              <TextField
-                label="Runtime Address"
-                value={spawnRuntime}
-                onChange={(e) => setSpawnRuntime(e.target.value)}
-                fullWidth
-                size="small"
-                placeholder="localhost:50051"
-                InputProps={{
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <Typography variant="caption" color="text.secondary">
-                        gRPC
-                      </Typography>
-                    </InputAdornment>
-                  ),
-                }}
+                slotProps={{ htmlInput: { min: 1 } }}
               />
               <Button
                 variant="contained"
@@ -153,11 +128,11 @@ export default function DevicesPage() {
         </Grid>
 
         {/* Stop card */}
-        <Grid item xs={12} md={6}>
+        <Grid size={{ xs: 12, md: 6 }}>
           <Card>
             <CardHeader
               title="Stop Devices"
-              titleTypographyProps={{ variant: 'subtitle1', fontWeight: 700 }}
+              slotProps={{ title: { variant: 'subtitle1', fontWeight: 700 } }}
             />
             <CardContent sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <RadioGroup
@@ -184,24 +159,6 @@ export default function DevicesPage() {
                 />
               )}
 
-              <TextField
-                label="Runtime Address"
-                value={stopRuntime}
-                onChange={(e) => setStopRuntime(e.target.value)}
-                fullWidth
-                size="small"
-                placeholder="localhost:50051"
-                InputProps={{
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <Typography variant="caption" color="text.secondary">
-                        gRPC
-                      </Typography>
-                    </InputAdornment>
-                  ),
-                }}
-              />
-
               <Button
                 variant="outlined"
                 color="error"
@@ -226,7 +183,7 @@ export default function DevicesPage() {
       <Card>
         <CardHeader
           title="Current Fleet"
-          titleTypographyProps={{ variant: 'subtitle1', fontWeight: 700 }}
+          slotProps={{ title: { variant: 'subtitle1', fontWeight: 700 } }}
           subheader={
             status
               ? `${status.fleet.total_devices} total device${status.fleet.total_devices !== 1 ? 's' : ''}`
@@ -241,7 +198,7 @@ export default function DevicesPage() {
           )}
           {status && (
             <Grid container spacing={3}>
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <Typography variant="body2" color="text.secondary" fontWeight={600} mb={1}>
                   By State
                 </Typography>
@@ -263,7 +220,7 @@ export default function DevicesPage() {
                 </Box>
               </Grid>
 
-              <Grid item xs={12} sm={6}>
+              <Grid size={{ xs: 12, sm: 6 }}>
                 <Typography variant="body2" color="text.secondary" fontWeight={600} mb={1}>
                   By Type
                 </Typography>
@@ -277,7 +234,7 @@ export default function DevicesPage() {
                       <ListItem key={type} disablePadding sx={{ py: 0.5 }}>
                         <ListItemText
                           primary={type}
-                          primaryTypographyProps={{ fontSize: 13 }}
+                          slotProps={{ primary: { fontSize: 13 } }}
                         />
                         <Chip label={c} size="small" variant="outlined" />
                       </ListItem>

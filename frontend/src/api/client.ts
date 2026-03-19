@@ -30,7 +30,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => request<HealthResponse>('/health'),
+  health: () => request<HealthResponse>(`${BASE}/health`),
 
   status: () => request<StatusResponse>(`${BASE}/devices/status`),
 
