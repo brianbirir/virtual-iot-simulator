@@ -27,8 +27,7 @@ dist/
 # OS
 .DS_Store
 
-contactcenter@kcb
-
-case num
-
-KCB-18982465-Y9T0
+# node
+node_modules
+dist/
+build/
