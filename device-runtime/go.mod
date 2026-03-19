@@ -7,7 +7,7 @@ require (
 	github.com/prometheus/client_golang v1.20.0
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/rs/zerolog v1.34.0
-	google.golang.org/grpc v1.79.2
+	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 )
 
