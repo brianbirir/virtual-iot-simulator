@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -29,7 +30,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
-_DEFAULT_RUNTIME = "localhost:50051"
+_DEFAULT_RUNTIME = os.environ.get("IOT_SIM_RUNTIME", "localhost:50051")
 
 
 # ---------------------------------------------------------------------------
