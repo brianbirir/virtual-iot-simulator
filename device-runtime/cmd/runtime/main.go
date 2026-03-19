@@ -90,6 +90,8 @@ func main() {
 
 	// --- gRPC server ---
 	grpcServer := grpc.NewServer(
+		grpc.MaxRecvMsgSize(200*1024*1024), // 200 MiB
+		grpc.MaxSendMsgSize(200*1024*1024), // 200 MiB
 		grpc.ChainUnaryInterceptor(
 			server.RecoveryInterceptor(),
 			server.LoggingInterceptor(),

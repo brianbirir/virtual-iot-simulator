@@ -36,7 +36,13 @@ class RuntimeClient:
 
     async def connect(self) -> None:
         """Open the gRPC channel."""
-        self._channel = grpc.aio.insecure_channel(self._address)
+        self._channel = grpc.aio.insecure_channel(
+            self._address,
+            options=[
+                ("grpc.max_send_message_length", 200 * 1024 * 1024),
+                ("grpc.max_receive_message_length", 200 * 1024 * 1024),
+            ],
+        )
         self._stub = orchestrator_pb2_grpc.DeviceRuntimeServiceStub(self._channel)
 
     async def close(self) -> None:
