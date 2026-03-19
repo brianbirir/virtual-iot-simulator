@@ -1,0 +1,30 @@
+name: Proto
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "proto/**"
+      - "buf.yaml"
+      - "buf.gen.yaml"
+      - ".github/workflows/proto.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "proto/**"
+      - "buf.yaml"
+      - "buf.gen.yaml"
+      - ".github/workflows/proto.yml"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          lint: true
+          format: true
+          breaking: false

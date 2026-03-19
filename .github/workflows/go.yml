@@ -1,0 +1,49 @@
+name: Go
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "device-runtime/**"
+      - ".github/workflows/go.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "device-runtime/**"
+      - ".github/workflows/go.yml"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: device-runtime
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: device-runtime/go.mod
+          cache: false
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          working-directory: device-runtime
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: device-runtime
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: device-runtime/go.mod
+
+      - name: Run tests
+        run: go test ./...
