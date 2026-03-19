@@ -6,6 +6,7 @@ without shell access.
 
 Base path: /api/v1
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -166,7 +167,9 @@ async def stream_telemetry(
     async def event_generator():
         async with RuntimeClient(runtime) as client:
             try:
-                async for batch in client.stream_telemetry(selector=selector, batch_size=batch_size):
+                async for batch in client.stream_telemetry(
+                    selector=selector, batch_size=batch_size
+                ):
                     for pt in batch.points:
                         kind = pt.WhichOneof("value")
                         value = getattr(pt, kind) if kind else None

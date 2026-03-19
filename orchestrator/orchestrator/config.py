@@ -4,6 +4,7 @@ Profiles are YAML files that define a device type's telemetry schema,
 protocol, and generator configuration. This module validates them via
 Pydantic and converts them to protobuf DeviceSpec messages.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -115,8 +116,7 @@ def profile_to_spec(profile: DeviceProfileConfig, device_id: str) -> DeviceSpec:
 
     # Encode telemetry_fields as google.protobuf.Struct
     fields_dict: dict[str, Any] = {
-        name: _field_config_to_dict(field)
-        for name, field in profile.telemetry_fields.items()
+        name: _field_config_to_dict(field) for name, field in profile.telemetry_fields.items()
     }
     behavior_params = struct_pb2.Struct()
     behavior_params.update({"fields": fields_dict})

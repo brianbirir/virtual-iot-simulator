@@ -57,5 +57,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      - name: Generate protobuf code
+        run: |
+          mkdir -p gen/python
+          uv run python -m grpc_tools.protoc \
+            -I ../proto \
+            -I $(uv run python -c "import grpc_tools, os; print(os.path.join(os.path.dirname(grpc_tools.__file__), '_proto'))") \
+            --python_out=gen/python \
+            --grpc_python_out=gen/python \
+            ../proto/simulator/v1/*.proto
+
       - name: Run tests
         run: uv run pytest

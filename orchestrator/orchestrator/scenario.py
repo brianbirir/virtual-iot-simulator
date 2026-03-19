@@ -12,6 +12,7 @@ Scenarios are async Python functions with the signature::
 They are executed by ScenarioRunner, which loads the script from a file path
 and injects a ScenarioContext backed by a real RuntimeClient.
 """
+
 from __future__ import annotations
 
 import asyncio

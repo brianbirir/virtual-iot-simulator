@@ -1,4 +1,5 @@
 """Tests for profile loading and DeviceSpec generation."""
+
 import pytest
 from pathlib import Path
 

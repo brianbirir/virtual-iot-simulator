@@ -1,8 +1,9 @@
 syntax = "proto3";
 package simulator.v1;
-option go_package = "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1;simulatorv1";
 
 import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1;simulatorv1";
 
 message TelemetryPoint {
   string device_id = 1;

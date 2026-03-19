@@ -1,4 +1,5 @@
 """IoT Simulator orchestrator package."""
+
 import sys
 from pathlib import Path
 

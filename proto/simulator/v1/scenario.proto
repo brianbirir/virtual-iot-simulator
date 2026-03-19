@@ -1,5 +1,6 @@
 syntax = "proto3";
 package simulator.v1;
+
 option go_package = "github.com/virtual-iot-simulator/device-runtime/gen/go/simulator/v1;simulatorv1";
 
 // Reserved for Phase 4 scenario event types.

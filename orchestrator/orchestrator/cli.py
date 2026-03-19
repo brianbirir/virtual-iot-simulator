@@ -1,4 +1,5 @@
 """IoT Simulator CLI — entry point for the iot-sim command."""
+
 from __future__ import annotations
 
 import asyncio
@@ -59,7 +60,9 @@ async def _spawn(profile_path: str, count: int, runtime: str) -> None:
 @app.command()
 def stop(
     all_devices: bool = typer.Option(False, "--all", help="Stop all devices"),
-    device_type: Optional[str] = typer.Option(None, "--type", "-t", help="Stop by device_type label"),
+    device_type: Optional[str] = typer.Option(
+        None, "--type", "-t", help="Stop by device_type label"
+    ),
     runtime: str = typer.Option(_DEFAULT_RUNTIME, "--runtime", "-r"),
 ) -> None:
     """Stop running devices."""
@@ -145,7 +148,9 @@ async def _stream(device_type: Optional[str], device_ids: Optional[str], runtime
             async for batch in client.stream_telemetry(selector=selector, batch_size=50):
                 for pt in batch.points:
                     val = _point_value(pt)
-                    console.print(f"[cyan]{pt.device_id}[/cyan] {pt.metric_name}={val}  ts={pt.timestamp.ToDatetime()}")
+                    console.print(
+                        f"[cyan]{pt.device_id}[/cyan] {pt.metric_name}={val}  ts={pt.timestamp.ToDatetime()}"
+                    )
         except KeyboardInterrupt:
             pass
 
@@ -169,8 +174,15 @@ app.add_typer(scenario_app)
 
 @scenario_app.command("run")
 def scenario_run(
-    script: str = typer.Argument(..., help="Path to scenario script (must define async def run(ctx))"),
-    speed: float = typer.Option(1.0, "--speed", "-s", help="Simulation time multiplier (1.0 = real-time, 60.0 = 1 s = 1 sim-minute)"),
+    script: str = typer.Argument(
+        ..., help="Path to scenario script (must define async def run(ctx))"
+    ),
+    speed: float = typer.Option(
+        1.0,
+        "--speed",
+        "-s",
+        help="Simulation time multiplier (1.0 = real-time, 60.0 = 1 s = 1 sim-minute)",
+    ),
     runtime: str = typer.Option(_DEFAULT_RUNTIME, "--runtime", "-r"),
 ) -> None:
     """Execute a scenario script against the running device runtime."""

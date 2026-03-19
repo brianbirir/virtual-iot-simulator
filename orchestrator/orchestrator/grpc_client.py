@@ -1,4 +1,5 @@
 """Typed gRPC client wrapper for the DeviceRuntimeService."""
+
 from __future__ import annotations
 
 import asyncio
@@ -90,6 +91,7 @@ class RuntimeClient:
     async def runtime_status(self) -> RuntimeStatus:
         """Return runtime health metrics."""
         from google.protobuf import empty_pb2
+
         return await self.stub.GetRuntimeStatus(empty_pb2.Empty())
 
     async def stream_telemetry(

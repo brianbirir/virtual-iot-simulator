@@ -13,8 +13,8 @@ from __future__ import annotations
 
 PROFILE = "temperature_sensor"
 TOTAL_DEVICES = 60
-WAVE_SIZE = 20       # devices spawned per wave
-WAVE_DELAY = "30s"   # simulated time between waves
+WAVE_SIZE = 20  # devices spawned per wave
+WAVE_DELAY = "30s"  # simulated time between waves
 
 
 async def run(ctx):  # ctx: ScenarioContext injected by ScenarioRunner

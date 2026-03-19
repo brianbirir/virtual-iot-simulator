@@ -5,6 +5,7 @@ exceed the capacity of a single process. Spawn requests are routed to the
 runtime that owns the device's hash slot; stop and fault-inject requests are
 fanned out to all instances.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -146,9 +147,7 @@ class RuntimePool:
 
     async def runtime_status(self) -> list[RuntimeStatus]:
         """Return runtime health metrics from all instances."""
-        return list(
-            await asyncio.gather(*(c.runtime_status() for c in self._clients.values()))
-        )
+        return list(await asyncio.gather(*(c.runtime_status() for c in self._clients.values())))
 
     def client_for(self, device_id: str) -> RuntimeClient:
         """Return the client responsible for a given device_id."""

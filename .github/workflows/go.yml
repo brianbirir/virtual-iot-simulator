@@ -27,9 +27,17 @@ jobs:
           go-version-file: device-runtime/go.mod
           cache: false
 
+      - uses: bufbuild/buf-action@v1
+        with:
+          lint: false
+          format: false
+          breaking: false
+          push: false
+          generate: true
+
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.8
+          version: latest
           working-directory: device-runtime
 
   test:
@@ -44,6 +52,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: device-runtime/go.mod
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          lint: false
+          format: false
+          breaking: false
+          push: false
+          generate: true
 
       - name: Run tests
         run: go test ./...
