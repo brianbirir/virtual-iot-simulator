@@ -338,4 +338,3 @@ cd orchestrator && pipenv run pytest tests/ -v
 
 - [docs/SYSTEM.md](docs/SYSTEM.md) — full technical design: architecture, data models, concurrency model, API reference, and implementation status per phase.
 - [docs/DEVICE_PROFILES.md](docs/DEVICE_PROFILES.md) — device profile YAML reference with all fields and generator types.
-- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — task-level execution plan for the AI-assisted build.
