@@ -19,17 +19,15 @@ import asyncio
 import importlib.util
 import time
 from pathlib import Path
-from typing import Optional
+
+from simulator.v1.orchestrator_pb2 import DeviceSelector, FleetStatus
 
 from orchestrator.config import load_profile_specs
 from orchestrator.grpc_client import (
     RuntimeClient,
-    generate_device_ids,
     make_device_id_selector,
     make_label_selector,
 )
-from simulator.v1.orchestrator_pb2 import DeviceSelector, FleetStatus
-
 
 # ---------------------------------------------------------------------------
 # SimClock
@@ -102,7 +100,7 @@ class ScenarioContext:
         self,
         profile: str,
         count: int = 1,
-        labels: Optional[dict[str, str]] = None,
+        labels: dict[str, str] | None = None,
         offset: int = 0,
     ) -> list[str]:
         """Spawn *count* devices from a YAML profile. Returns the device IDs."""
@@ -115,8 +113,8 @@ class ScenarioContext:
 
     async def stop(
         self,
-        ids: Optional[list[str]] = None,
-        device_type: Optional[str] = None,
+        ids: list[str] | None = None,
+        device_type: str | None = None,
         graceful: bool = True,
     ) -> int:
         """Stop devices by ID list or device_type label. Returns count stopped."""
@@ -127,10 +125,10 @@ class ScenarioContext:
     async def inject_fault(
         self,
         fault: str,
-        ids: Optional[list[str]] = None,
-        device_type: Optional[str] = None,
+        ids: list[str] | None = None,
+        device_type: str | None = None,
         duration: str = "60s",
-        params: Optional[dict] = None,
+        params: dict | None = None,
     ) -> None:
         """Inject a fault into matching devices.
 
@@ -166,8 +164,8 @@ class ScenarioContext:
     async def update_behavior(
         self,
         behavior_params: dict,
-        ids: Optional[list[str]] = None,
-        device_type: Optional[str] = None,
+        ids: list[str] | None = None,
+        device_type: str | None = None,
     ) -> None:
         """Update generator parameters for matching devices at runtime."""
         from google.protobuf import struct_pb2
@@ -246,9 +244,9 @@ class ScenarioRunner:
 
 
 def _build_selector(
-    ids: Optional[list[str]],
-    device_type: Optional[str],
-) -> Optional[DeviceSelector]:
+    ids: list[str] | None,
+    device_type: str | None,
+) -> DeviceSelector | None:
     if ids:
         return make_device_id_selector(ids)
     if device_type:

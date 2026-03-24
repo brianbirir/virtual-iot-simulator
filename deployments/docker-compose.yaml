@@ -1,6 +1,24 @@
 name: iot-simulator
 
 services:
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: iotsim
+      POSTGRES_PASSWORD: iotsim
+      POSTGRES_DB: iotsim
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iotsim -d iotsim"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   # ── Device Runtime (Go) ──────────────────────────────────────────────────
   runtime:
     build:
@@ -42,8 +60,11 @@ services:
       - "8000:8000"
     environment:
       IOT_SIM_RUNTIME: runtime:50051
+      DATABASE_URL: postgresql+asyncpg://iotsim:iotsim@postgres:5432/iotsim
     depends_on:
       runtime:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
@@ -112,5 +133,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  postgres_data:
   prometheus_data:
   grafana_data:

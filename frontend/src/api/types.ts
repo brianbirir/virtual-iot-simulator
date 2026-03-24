@@ -1,7 +1,56 @@
+// ── Device Profiles ────────────────────────────────────────────────────────────
+
+export type GeneratorType = 'gaussian' | 'brownian' | 'diurnal' | 'markov' | 'static';
+export type Protocol = 'mqtt' | 'amqp' | 'http' | 'console';
+
+export interface TelemetryFieldConfig {
+  type: GeneratorType;
+  // gaussian
+  mean?: number;
+  stddev?: number;
+  // brownian
+  start?: number;
+  drift?: number;
+  volatility?: number;
+  mean_reversion?: number;
+  min?: number;
+  max?: number;
+  // diurnal
+  baseline?: number;
+  amplitude?: number;
+  peak_hour?: number;
+  noise_stddev?: number;
+  // markov
+  states?: string[];
+  transition_matrix?: number[][];
+  initial_state?: string;
+  // static
+  value?: number;
+}
+
+export interface DeviceProfileBase {
+  name: string;
+  type: string;
+  protocol: Protocol;
+  topic_template: string;
+  telemetry_interval: string;
+  telemetry_fields: Record<string, TelemetryFieldConfig>;
+  labels: Record<string, string>;
+}
+
+export interface DeviceProfile extends DeviceProfileBase {
+  id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ProfileCreateRequest = DeviceProfileBase;
+export type ProfileUpdateRequest = Partial<DeviceProfileBase>;
+
 // ── Requests ──────────────────────────────────────────────────────────────────
 
 export interface SpawnRequest {
-  profile: string;
+  profile_id: string;
   count: number;
   runtime?: string;
 }

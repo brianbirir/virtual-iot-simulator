@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
 import grpc
 import grpc.aio
-
-from gen.python.simulator.v1 import device_pb2, orchestrator_pb2, orchestrator_pb2_grpc
 from simulator.v1.orchestrator_pb2 import (
     DeviceIdList,
     DeviceSelector,
@@ -24,6 +21,8 @@ from simulator.v1.orchestrator_pb2 import (
 )
 from simulator.v1.telemetry_pb2 import TelemetryBatch
 
+from gen.python.simulator.v1 import device_pb2, orchestrator_pb2_grpc
+
 
 class RuntimeClient:
     """Typed wrapper around the generated DeviceRuntimeService gRPC stub."""
@@ -31,8 +30,8 @@ class RuntimeClient:
     def __init__(self, address: str = "localhost:50051"):
         """Connect to a runtime at address (host:port)."""
         self._address = address
-        self._channel: Optional[grpc.aio.Channel] = None
-        self._stub: Optional[orchestrator_pb2_grpc.DeviceRuntimeServiceStub] = None
+        self._channel: grpc.aio.Channel | None = None
+        self._stub: orchestrator_pb2_grpc.DeviceRuntimeServiceStub | None = None
 
     async def connect(self) -> None:
         """Open the gRPC channel."""
@@ -50,7 +49,7 @@ class RuntimeClient:
         if self._channel:
             await self._channel.close()
 
-    async def __aenter__(self) -> "RuntimeClient":
+    async def __aenter__(self) -> RuntimeClient:
         await self.connect()
         return self
 
@@ -75,7 +74,7 @@ class RuntimeClient:
 
     async def stop(
         self,
-        selector: Optional[DeviceSelector] = None,
+        selector: DeviceSelector | None = None,
         graceful: bool = True,
     ) -> StopDevicesResponse:
         """Stop devices matching selector (or all devices if selector is None)."""
@@ -86,7 +85,7 @@ class RuntimeClient:
 
     async def status(
         self,
-        selector: Optional[DeviceSelector] = None,
+        selector: DeviceSelector | None = None,
     ) -> FleetStatus:
         """Return current fleet status."""
         req = GetFleetStatusRequest()
@@ -102,7 +101,7 @@ class RuntimeClient:
 
     async def stream_telemetry(
         self,
-        selector: Optional[DeviceSelector] = None,
+        selector: DeviceSelector | None = None,
         batch_size: int = 100,
     ) -> AsyncIterator[TelemetryBatch]:
         """Yield TelemetryBatch objects from the runtime stream."""

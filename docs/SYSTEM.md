@@ -61,6 +61,7 @@ The design prioritises realistic device behaviour (not just load generation), de
 | **Phase 6** | Multi-stage Dockerfiles (Go runtime + Python orchestrator) · Docker Compose stack: runtime, Mosquitto, Prometheus, Grafana · Mosquitto config · Prometheus scrape config · Grafana datasource + dashboard provisioning · Non-root (`iotsim`) user in both images | ✅ Complete |
 | **Phase 7** | MQTT connection pool (`MQTTPool`, `--mqtt-pool-size`) · Backpressure `slow_down` mode (doubles tick interval at >80% queue fill, restores at <50%) + `sim_backpressure_slowdowns_total` / `sim_publish_queue_depth` metrics · Enhanced graceful shutdown (`sync.WaitGroup` + 5 s progress logging) · `RunID` (auto-generated hex or `--run-id` flag) logged at startup · Deterministic replay test (`replay_test.go`) · Example scenario (`ramp_up.py`) · golangci-lint + ruff lint/format tooling (`make go-lint`, `make py-lint`, `make go-fmt`, `make py-fmt`) | ✅ Complete |
 | **Phase 8** | React + TypeScript frontend (Vite, MUI, TanStack Query) · Dashboard page (fleet stats, runtime details, auto-refresh) · Devices page (spawn/stop forms, fleet summary) · Telemetry page (SSE stream, scrolling event table) · Multi-stage `Dockerfile.frontend` + nginx reverse proxy · `orchestrator` and `frontend` services added to Docker Compose | ✅ Complete |
+| **Phase 9** | PostgreSQL-backed device profiles · SQLAlchemy async ORM (`DeviceProfile` model, JSONB telemetry_fields and labels) · Profile CRUD REST API (`GET/POST/PUT/DELETE /api/v1/profiles`) · Database initialisation on orchestrator startup · Spawn endpoint updated to accept `profile_id` (UUID) instead of YAML file path · Profiles page in frontend (table, create/edit dialog with per-generator parameter fields, label editor, delete confirmation) · Devices page spawn form updated to dropdown populated from database · PostgreSQL 16 service added to Docker Compose with named volume and health check | ✅ Complete |
 
 ---
 
@@ -190,7 +191,8 @@ The orchestrator and runtime communicate exclusively via gRPC over HTTP/2. This 
 The orchestrator is the control plane. It doesn't simulate devices — it tells the runtime what to simulate and monitors the results.
 
 **Responsibilities:**
-- Load and validate device profiles from YAML files.
+
+- Persist and manage device profiles in PostgreSQL.
 - Convert profiles to protobuf `DeviceSpec` messages.
 - Manage fleet lifecycle (spawn, stop, query) via gRPC calls to one or more runtime instances.
 - Execute scenario scripts that choreograph fleet behaviour over time.
@@ -198,29 +200,26 @@ The orchestrator is the control plane. It doesn't simulate devices — it tells 
 - Provide a **CLI** for interactive and scripted use.
 - Provide a **REST API** (FastAPI) for programmatic and dashboard integration.
 
-**Key classes (Phase 1 implemented):**
+**Key modules:**
 
-```
+```text
 RuntimeClient          — Async typed wrapper around generated gRPC stub.
                          Supports spawn, stop, status, runtime_status,
                          stream_telemetry.
-config.py              — load_profile() / load_profile_specs() — loads and
-                         validates YAML profiles via Pydantic, converts to
-                         DeviceSpec protos.
+database.py            — Async SQLAlchemy engine (asyncpg), session factory,
+                         Base declarative class, init_db() creates tables on startup.
+models.py              — DeviceProfile ORM model: id (UUID PK), name (unique),
+                         type, protocol, topic_template, telemetry_interval,
+                         telemetry_fields (JSONB), labels (JSONB),
+                         created_at, updated_at.
+config.py              — profile_to_specs_from_dict() — validates a profile dict
+                         loaded from the database via Pydantic and converts it to
+                         DeviceSpec protos. Legacy load_profile() / load_profile_specs()
+                         remain for CLI / YAML-based workflows.
 CLI (cli.py)           — typer commands: spawn, stop, status, stream, serve.
-REST API (api.py)      — FastAPI app: POST /spawn, POST /stop, GET /status,
-                         GET /stream (SSE), GET /health.
-```
-
-**Planned (Phase 3+):**
-
-```text
-ProfileRegistry        — Caching profile loader.
-RuntimePool            — Consistent-hash routing across multiple runtime instances.
-ScenarioContext        — Injected into scenario scripts; exposes spawn/stop/
-                         fault/wait primitives.
-ScenarioRunner         — Discovers and executes scenario scripts.
-SimClock               — Simulation clock with configurable speed multiplier.
+REST API (api.py)      — FastAPI app: full CRUD for /api/v1/profiles, POST /devices/spawn
+                         (accepts profile_id), POST /devices/stop, GET /devices/status,
+                         GET /devices/stream (SSE), GET /health.
 ```
 
 **Profile validation schema** (Pydantic):
@@ -614,22 +613,28 @@ The frontend is a single-page application served by nginx. It communicates exclu
 | Page | Route | Description |
 | ---- | ----- | ----------- |
 | Dashboard | `/` | Four stat cards (total devices, active devices, memory, uptime) · fleet-by-state chip grid · fleet-by-type list · runtime details; all auto-refresh every 5 s |
-| Devices | `/devices` | Spawn form (profile path, count, runtime address) · Stop form (all / by device type) · live fleet summary; mutations invalidate the status query |
+| Devices | `/devices` | Spawn form (profile dropdown populated from database, count) · Stop form (all / by device type) · live fleet summary; mutations invalidate the status query |
+| Profiles | `/profiles` | Profile table with edit/delete per row · New Profile dialog (all fields, per-generator parameter inputs, label key/value editor) · Edit dialog pre-populated · Delete confirmation dialog |
 | Telemetry | `/telemetry` | Device type + ID filters · SSE connect/disconnect · scrolling event table (max 500 rows) with auto-scroll toggle |
 
 **API layer (`src/api/`):**
 
 ```
-types.ts          — TypeScript interfaces mirroring FastAPI request/response models
+types.ts          — TypeScript interfaces mirroring FastAPI request/response models,
+                    including DeviceProfile, TelemetryFieldConfig, ProfileCreateRequest,
+                    ProfileUpdateRequest; SpawnRequest.profile_id replaces .profile
 client.ts         — fetch-based functions for each endpoint; throws on non-2xx with
-                    the FastAPI `detail` string
+                    the FastAPI `detail` string; api.profiles.{list,get,create,update,delete}
 hooks/
-  useHealth.ts        — GET /health, refetch every 30 s
-  useStatus.ts        — GET /api/v1/devices/status, refetch every 5 s
-  useSpawnDevices.ts  — POST /api/v1/devices/spawn mutation
-  useStopDevices.ts   — POST /api/v1/devices/stop mutation
-  useTelemetryStream.ts — EventSource wrapper; parses both single-point and
-                          batch JSON event payloads; cleans up on unmount
+  useHealth.ts          — GET /health, refetch every 30 s
+  useStatus.ts          — GET /api/v1/devices/status, refetch every 5 s
+  useSpawnDevices.ts    — POST /api/v1/devices/spawn mutation
+  useStopDevices.ts     — POST /api/v1/devices/stop mutation
+  useTelemetryStream.ts — EventSource wrapper; cleans up on unmount
+  useProfiles.ts        — GET /api/v1/profiles query
+  useCreateProfile.ts   — POST /api/v1/profiles mutation; invalidates profiles query
+  useUpdateProfile.ts   — PUT /api/v1/profiles/{id} mutation; invalidates profiles query
+  useDeleteProfile.ts   — DELETE /api/v1/profiles/{id} mutation; invalidates profiles query
 ```
 
 **Nginx reverse proxy** (`deployments/nginx.frontend.conf`):
@@ -644,68 +649,45 @@ hooks/
 
 ## 6. Data Models
 
-### 6.1 Device Profile (YAML → Protobuf)
+### 6.1 Device Profile (PostgreSQL)
 
-```yaml
-# profiles/temperature_sensor.yaml  (Phase 1 — console + gaussian/static generators)
-type: temperature_sensor
-protocol: console
-topic_template: "devices/{device_id}/telemetry"
-telemetry_interval: 5s
-telemetry_fields:
-  temperature:
-    type: gaussian
-    mean: 22.0
-    stddev: 1.0
-  humidity:
-    type: gaussian
-    mean: 55.0
-    stddev: 5.0
-  battery:
-    type: static
-    value: 100.0
-labels:
-  category: environmental
-  firmware: "1.2.0"
+Device profiles are stored in the `device_profiles` table in PostgreSQL. The schema is:
+
+| Column | Type | Constraints | Description |
+| ------ | ---- | ----------- | ----------- |
+| `id` | UUID | PK, default `gen_random_uuid()` | Stable identifier used in API paths and spawn requests |
+| `name` | TEXT | UNIQUE NOT NULL | Human-readable profile name (e.g. `temperature-sensor-v1`) |
+| `type` | TEXT | NOT NULL | Device type string added as `device_type` label on every spawned device |
+| `protocol` | TEXT | NOT NULL, default `console` | One of `mqtt`, `amqp`, `http`, `console` |
+| `topic_template` | TEXT | NOT NULL | Publish destination with `{device_id}` placeholder |
+| `telemetry_interval` | TEXT | NOT NULL, default `5s` | Duration string, e.g. `5s`, `500ms`, `1m` |
+| `telemetry_fields` | JSONB | NOT NULL, default `{}` | Map of field name → generator config object |
+| `labels` | JSONB | NOT NULL, default `{}` | Arbitrary string key/value metadata |
+| `created_at` | TIMESTAMPTZ | NOT NULL | Set on insert |
+| `updated_at` | TIMESTAMPTZ | NOT NULL | Updated on every write |
+
+Example profile object (as returned by the API):
+
+```json
+{
+  "id": "d1e2f3a4-5b6c-7d8e-9f0a-1b2c3d4e5f6a",
+  "name": "temperature-sensor-v1",
+  "type": "temperature_sensor",
+  "protocol": "console",
+  "topic_template": "devices/{device_id}/telemetry",
+  "telemetry_interval": "5s",
+  "telemetry_fields": {
+    "temperature": { "type": "gaussian", "mean": 22.0, "stddev": 1.0 },
+    "humidity":    { "type": "gaussian", "mean": 55.0, "stddev": 5.0 },
+    "battery":     { "type": "static",   "value": 100.0 }
+  },
+  "labels": { "category": "environmental", "firmware": "1.2.0" },
+  "created_at": "2026-03-20T10:00:00Z",
+  "updated_at": "2026-03-20T10:00:00Z"
+}
 ```
 
-> **Planned (Phase 2+):** Richer profiles using `diurnal`, `brownian`, and `markov` generators, and `mqtt` protocol once Phase 3 adapters land:
->
-> ```yaml
-> # profiles/temperature_sensor_full.yaml  (target design)
-> type: temperature_sensor
-> protocol: mqtt
-> topic_template: "devices/{device_id}/telemetry"
-> telemetry_interval: 5s
-> telemetry_fields:
->   temperature:
->     type: diurnal
->     baseline: 22.0
->     amplitude: 5.0
->     peak_hour: 14
->     noise_stddev: 0.3
->   humidity:
->     type: brownian
->     start: 55.0
->     drift: 0
->     volatility: 0.5
->     mean_reversion: 0.1
->     mean: 55.0
->     min: 20.0
->     max: 95.0
->   battery:
->     type: brownian
->     start: 100.0
->     drift: -0.001
->     volatility: 0.0
->     mean_reversion: 0.0
->     mean: 0.0
->     min: 0.0
->     max: 100.0
-> labels:
->   category: environmental
->   firmware: "1.2.0"
-> ```
+The table is created automatically by `init_db()` on orchestrator startup (SQLAlchemy `create_all`). See `docs/DEVICE_PROFILES.md` for the full field reference and generator parameter documentation.
 
 ### 6.2 Telemetry Payload (JSON, as published to brokers)
 
@@ -975,6 +957,7 @@ Pre-built dashboard with panels for: active devices (gauge by type), messages/se
 
 ```yaml
 services:
+  postgres:     # postgres:16-alpine — port 5432; stores device profiles
   mosquitto:    # eclipse-mosquitto:2 — port 1883
   runtime:      # Go device runtime — ports 50051 (gRPC) + 8080 (admin/metrics)
   orchestrator: # Python FastAPI — port 8000; command: iot-sim serve
@@ -983,7 +966,7 @@ services:
   grafana:      # grafana/grafana — port 3000, auto-provisioned datasource + dashboard
 ```
 
-Single command: `docker compose -f deployments/docker-compose.yaml up --build`. Startup order is enforced via healthcheck dependencies: `mosquitto` → `runtime` → `orchestrator` → `frontend`. Both custom images run as the non-root `iotsim` user. Grafana dashboards and Prometheus data are persisted via named volumes (`prometheus_data`, `grafana_data`).
+Single command: `docker compose -f deployments/docker-compose.yaml up --build`. Startup order is enforced via healthcheck dependencies: `mosquitto` → `runtime` → `postgres` → `orchestrator` → `frontend`. Both custom images run as the non-root `iotsim` user. Profile, Prometheus, and Grafana data are persisted via named volumes (`postgres_data`, `prometheus_data`, `grafana_data`).
 
 ### 10.2 Production / Cloud-Native (Kubernetes)
 
@@ -1103,7 +1086,12 @@ The API server is started with `iot-sim serve`. Interactive docs are available a
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| `POST` | `/api/v1/devices/spawn` | Spawn devices from a profile YAML |
+| `GET` | `/api/v1/profiles` | List all device profiles |
+| `POST` | `/api/v1/profiles` | Create a device profile |
+| `GET` | `/api/v1/profiles/{id}` | Get a device profile by ID |
+| `PUT` | `/api/v1/profiles/{id}` | Update a device profile |
+| `DELETE` | `/api/v1/profiles/{id}` | Delete a device profile |
+| `POST` | `/api/v1/devices/spawn` | Spawn devices from a database profile (`profile_id`) |
 | `POST` | `/api/v1/devices/stop` | Stop devices by type or all |
 | `GET` | `/api/v1/devices/status` | Fleet + runtime status |
 | `GET` | `/api/v1/devices/stream` | Live telemetry as SSE (`text/event-stream`) |
@@ -1112,7 +1100,7 @@ The API server is started with `iot-sim serve`. Interactive docs are available a
 **Spawn request:**
 
 ```json
-{ "profile": "profiles/temperature_sensor.yaml", "count": 10, "runtime": "localhost:50051" }
+{ "profile_id": "d1e2f3a4-5b6c-7d8e-9f0a-1b2c3d4e5f6a", "count": 10, "runtime": "localhost:50051" }
 ```
 
 **Stop request:**
@@ -1221,7 +1209,15 @@ gc:
 
 Environment variable mapping: `IOT_SIM_GRPC_PORT=50051`, `IOT_SIM_MQTT_DEFAULT_BROKER=tcp://...`, etc.
 
-### 14.2 Orchestrator Configuration (Python)
+### 14.2 Orchestrator Environment Variables
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `IOT_SIM_RUNTIME` | `localhost:50051` | Device runtime gRPC address |
+| `IOT_SIM_PROFILES_DIR` | `/profiles` | Directory for legacy YAML profile resolution (CLI only) |
+| `DATABASE_URL` | `postgresql+asyncpg://iotsim:iotsim@localhost:5432/iotsim` | Async SQLAlchemy connection URL for profile persistence |
+
+### 14.3 Orchestrator Configuration (Python)
 
 ```yaml
 # orchestrator-config.yaml
@@ -1274,6 +1270,7 @@ grpc_client:
 | D8 | Buf over raw protoc | Dependency management, linting, breaking-change detection in CI | protoc + manual scripts (fragile, no breaking-change checks) |
 | D9 | Server-streaming (not bidi) for telemetry | Orchestrator doesn't need to send mid-stream. Simpler concurrency model. | Bidi streaming (unnecessary complexity for this use case) |
 | D10 | Console publisher as first adapter | Fastest feedback loop during development. Zero external dependencies. | MQTT-first (requires broker setup before anything works) |
+| D11 | PostgreSQL for profile persistence (replacing YAML files) | Profiles become first-class resources with CRUD APIs and a UI. Enables runtime creation/editing without file system access, consistent with containerised deployments where bind-mounting YAML files is fragile. JSONB columns for `telemetry_fields` and `labels` preserve schema flexibility without requiring a proto change per generator type. | Keep YAML files (no UI editing, no live updates, mount issues in containers); SQLite (simpler but lacks JSONB and is single-writer) |
 
 ---
 
@@ -1282,7 +1279,7 @@ grpc_client:
 | Term | Definition |
 |------|-----------|
 | **Virtual device** | A goroutine that simulates one IoT device: generates telemetry, publishes via a protocol adapter. |
-| **Device profile** | A YAML configuration that defines a device type's telemetry fields, generators, protocol, and publish interval. |
+| **Device profile** | A named configuration record (persisted in PostgreSQL) that defines a device type's telemetry fields, generators, protocol, and publish interval. Managed via the REST API (`/api/v1/profiles`) and the Profiles page in the dashboard. |
 | **Generator** | A pluggable component that produces the next value for one telemetry field (e.g., Gaussian, Brownian, Diurnal). |
 | **Publisher** | A protocol adapter that sends telemetry payloads to an external system (MQTT broker, HTTP endpoint, etc.). |
 | **Scenario** | A Python async function that choreographs fleet behaviour over time — spawning, stopping, and injecting faults. |

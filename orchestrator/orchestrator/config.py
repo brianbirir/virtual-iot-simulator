@@ -9,15 +9,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, field_validator
 from google.protobuf import duration_pb2, struct_pb2
-
+from pydantic import BaseModel, field_validator
 from simulator.v1.device_pb2 import DeviceSpec
-from orchestrator.grpc_client import generate_device_ids
 
+from orchestrator.grpc_client import generate_device_ids
 
 # ---------------------------------------------------------------------------
 # Pydantic models for profile validation
@@ -29,26 +28,26 @@ class TelemetryFieldConfig(BaseModel):
 
     type: Literal["gaussian", "brownian", "diurnal", "markov", "static"]
     # Gaussian
-    mean: Optional[float] = None
-    stddev: Optional[float] = None
+    mean: float | None = None
+    stddev: float | None = None
     # Brownian
-    start: Optional[float] = None
-    drift: Optional[float] = None
-    volatility: Optional[float] = None
-    mean_reversion: Optional[float] = None
-    min: Optional[float] = None
-    max: Optional[float] = None
+    start: float | None = None
+    drift: float | None = None
+    volatility: float | None = None
+    mean_reversion: float | None = None
+    min: float | None = None
+    max: float | None = None
     # Diurnal
-    baseline: Optional[float] = None
-    amplitude: Optional[float] = None
-    peak_hour: Optional[int] = None
-    noise_stddev: Optional[float] = None
+    baseline: float | None = None
+    amplitude: float | None = None
+    peak_hour: int | None = None
+    noise_stddev: float | None = None
     # Markov
-    states: Optional[list[str]] = None
-    transition_matrix: Optional[list[list[float]]] = None
-    initial_state: Optional[str] = None
+    states: list[str] | None = None
+    transition_matrix: list[list[float]] | None = None
+    initial_state: str | None = None
     # Static
-    value: Optional[Any] = None
+    value: Any | None = None
 
 
 class DeviceProfileConfig(BaseModel):
@@ -161,5 +160,15 @@ def load_profile_specs(path: str | Path, count: int, offset: int = 0) -> list[De
     Device IDs follow the convention: {device_type}-{zero_padded_index}.
     """
     profile = load_profile(path)
+    ids = generate_device_ids(profile.type, count, offset)
+    return [profile_to_spec(profile, device_id) for device_id in ids]
+
+
+def profile_to_specs_from_dict(data: dict, count: int, offset: int = 0) -> list[DeviceSpec]:
+    """Build DeviceSpec messages from a plain dict (e.g. loaded from the database).
+
+    ``data`` must match the DeviceProfileConfig schema.
+    """
+    profile = DeviceProfileConfig.model_validate(data)
     ids = generate_device_ids(profile.type, count, offset)
     return [profile_to_spec(profile, device_id) for device_id in ids]

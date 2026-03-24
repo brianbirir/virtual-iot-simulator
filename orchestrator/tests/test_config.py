@@ -1,13 +1,12 @@
 """Tests for profile loading and DeviceSpec generation."""
 
-import pytest
 from pathlib import Path
 
 PROFILES_DIR = Path(__file__).parent.parent.parent / "profiles"
 
 
 def test_load_temperature_sensor_profile():
-    from orchestrator.config import load_profile, load_profile_specs
+    from orchestrator.config import load_profile
 
     profile = load_profile(PROFILES_DIR / "temperature_sensor.yaml")
     assert profile.type == "temperature_sensor"

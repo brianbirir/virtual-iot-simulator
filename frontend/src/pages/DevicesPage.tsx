@@ -7,13 +7,17 @@ import {
   CardHeader,
   Chip,
   CircularProgress,
+  FormControl,
   FormControlLabel,
   Grid2 as Grid,
+  InputLabel,
   List,
   ListItem,
   ListItemText,
+  MenuItem,
   Radio,
   RadioGroup,
+  Select,
   Snackbar,
   TextField,
   Typography,
@@ -24,6 +28,7 @@ import StopIcon from '@mui/icons-material/Stop';
 import { useSpawnDevices } from '../api/hooks/useSpawnDevices';
 import { useStopDevices } from '../api/hooks/useStopDevices';
 import { useStatus } from '../api/hooks/useStatus';
+import { useProfiles } from '../api/hooks/useProfiles';
 
 const STATE_COLORS: Record<string, 'success' | 'error' | 'warning' | 'info' | 'default'> = {
   RUNNING: 'success',
@@ -41,7 +46,7 @@ interface SnackState {
 
 export default function DevicesPage() {
   // Spawn form
-  const [profile, setProfile] = useState('temperature_sensor.yaml');
+  const [profileId, setProfileId] = useState('');
   const [count, setCount] = useState(10);
   // Stop form
   const [stopMode, setStopMode] = useState<'all' | 'type'>('all');
@@ -50,6 +55,7 @@ export default function DevicesPage() {
   const [snack, setSnack] = useState<SnackState>({ open: false, message: '', severity: 'success' });
 
   const { data: status } = useStatus();
+  const { data: profiles } = useProfiles();
   const spawnMutation = useSpawnDevices();
   const stopMutation = useStopDevices();
 
@@ -59,7 +65,7 @@ export default function DevicesPage() {
 
   async function handleSpawn() {
     try {
-      const res = await spawnMutation.mutateAsync({ profile, count });
+      const res = await spawnMutation.mutateAsync({ profile_id: profileId, count });
       const failMsg = res.failed.length ? `, ${res.failed.length} failed` : '';
       showSnack(`Spawned ${res.spawned} device(s)${failMsg}`, 'success');
     } catch (e) {
@@ -95,15 +101,27 @@ export default function DevicesPage() {
               slotProps={{ title: { variant: 'subtitle1', fontWeight: 700 } }}
             />
             <CardContent sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <TextField
-                label="Profile Path"
-                value={profile}
-                onChange={(e) => setProfile(e.target.value)}
-                fullWidth
-                size="small"
-                placeholder="temperature_sensor.yaml"
-                helperText="Profile filename (resolved from the server's profiles directory)"
-              />
+              <FormControl size="small" fullWidth>
+                <InputLabel>Device Profile</InputLabel>
+                <Select
+                  label="Device Profile"
+                  value={profileId}
+                  onChange={(e) => setProfileId(e.target.value)}
+                  displayEmpty
+                >
+                  {!profiles || profiles.length === 0 ? (
+                    <MenuItem disabled value="">
+                      No profiles — create one in the Profiles page
+                    </MenuItem>
+                  ) : (
+                    profiles.map((p) => (
+                      <MenuItem key={p.id} value={p.id}>
+                        {p.name} ({p.type})
+                      </MenuItem>
+                    ))
+                  )}
+                </Select>
+              </FormControl>
               <TextField
                 label="Device Count"
                 type="number"
@@ -116,7 +134,7 @@ export default function DevicesPage() {
               <Button
                 variant="contained"
                 onClick={() => void handleSpawn()}
-                disabled={spawnMutation.isPending || !profile}
+                disabled={spawnMutation.isPending || !profileId}
                 startIcon={
                   spawnMutation.isPending ? <CircularProgress size={16} color="inherit" /> : <AddIcon />
                 }
