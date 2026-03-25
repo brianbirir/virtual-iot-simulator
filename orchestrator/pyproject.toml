@@ -54,6 +54,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["orchestrator"]
+known-third-party = ["gen", "simulator"]
 
 [tool.ruff.format]
 quote-style = "double"
