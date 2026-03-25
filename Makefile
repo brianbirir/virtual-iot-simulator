@@ -7,7 +7,7 @@
         deps deps-go deps-py lint docker-lint
 
 ROOT_DIR              := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
-DOCKER_GO_IMAGE       ?= golang:1.22-alpine
+DOCKER_GO_IMAGE       ?= golang:1.26-alpine
 DOCKER_PY_IMAGE       ?= python:3.12-slim
 GOLANGCI_LINT_VERSION ?= v1.64.8
 # Source is mounted read-only; a named volume provides a writable module/build
@@ -143,13 +143,18 @@ DOCKER_PY_INSTALL := pip install --quiet --no-cache-dir \
 	"uvicorn[standard]" pytest pytest-asyncio httpx ruff
 
 docker-py-test:
-	$(DOCKER_PY_RUN) sh -c "$(DOCKER_PY_INSTALL) && pytest tests/ -v"
+	docker run --rm \
+		-v "$(ROOT_DIR)/orchestrator:/workspace:ro" \
+		-v "$(ROOT_DIR)/profiles:/profiles:ro" \
+		-v iot-sim-pipcache:/root/.cache/pip \
+		-w /workspace \
+		$(DOCKER_PY_IMAGE) sh -c "$(DOCKER_PY_INSTALL) && pytest tests/ -v -p no:cacheprovider"
 
 docker-py-lint:
 	$(DOCKER_PY_RUN) sh -c "\
 		pip install --quiet --no-cache-dir ruff && \
-		ruff format --check . && \
-		ruff check ."
+		ruff format --check --no-cache . && \
+		ruff check --no-cache ."
 
 # fmt writes back to the host via a rw mount.
 docker-py-fmt:
