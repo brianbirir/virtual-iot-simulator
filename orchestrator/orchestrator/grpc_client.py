@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 
 import grpc
 import grpc.aio
+from gen.python.simulator.v1 import device_pb2, orchestrator_pb2_grpc
 from simulator.v1.orchestrator_pb2 import (
     DeviceIdList,
     DeviceSelector,
@@ -20,8 +21,6 @@ from simulator.v1.orchestrator_pb2 import (
     StreamTelemetryRequest,
 )
 from simulator.v1.telemetry_pb2 import TelemetryBatch
-
-from gen.python.simulator.v1 import device_pb2, orchestrator_pb2_grpc
 
 
 class RuntimeClient:
