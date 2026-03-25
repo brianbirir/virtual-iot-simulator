@@ -75,8 +75,8 @@ go-test:
 # Auto-fix Go import ordering and formatting.
 go-fmt:
 	@test -f $(GOIMPORTS) || go install golang.org/x/tools/cmd/goimports@latest
-	cd device-runtime && $(GOIMPORTS) -w -local github.com/virtual-iot-simulator ./...
-	cd device-runtime && gofmt -w ./...
+	cd device-runtime && $(GOIMPORTS) -w -local github.com/virtual-iot-simulator .
+	cd device-runtime && gofmt -w .
 
 # Auto-installs golangci-lint to $(GOPATH)/bin if missing.
 go-lint:
