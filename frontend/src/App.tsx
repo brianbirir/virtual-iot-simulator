@@ -5,6 +5,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import AppLayout from './components/layout/AppLayout';
 import DashboardPage from './pages/DashboardPage';
 import DevicesPage from './pages/DevicesPage';
+import ProfilesPage from './pages/ProfilesPage';
 import TelemetryPage from './pages/TelemetryPage';
 import theme from './theme';
 
@@ -26,6 +27,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/devices" element={<DevicesPage />} />
+              <Route path="/profiles" element={<ProfilesPage />} />
               <Route path="/telemetry" element={<TelemetryPage />} />
             </Routes>
           </AppLayout>

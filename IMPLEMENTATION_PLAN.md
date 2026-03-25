@@ -1234,16 +1234,83 @@ gc:
 ## 5. Implementation Order Summary
 
 ```
-Phase 0  ──▶  Phase 1  ──▶  Phase 2  ──▶  Phase 3  ──▶  Phase 4  ──▶  Phase 5  ──▶  Phase 6  ──▶  Phase 7
-Scaffold     Walking       Profiles      Protocols     Scenarios     Observability  Containers   Scale-out
-             skeleton      + generators  MQTT/HTTP     Engine        Prometheus     Docker        Sharding
-             1 device      multi-field   AMQP          Fault inject  Grafana        Compose       Backpressure
-             console out   YAML config   real brokers  Sim clock     Admin API      Full stack    Replay
+Phase 0  ──▶  Phase 1  ──▶  Phase 2  ──▶  Phase 3  ──▶  Phase 4  ──▶  Phase 5  ──▶  Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9
+Scaffold     Walking       Profiles      Protocols     Scenarios     Observability  Containers   Scale-out    Frontend     DB Profiles
+             skeleton      + generators  MQTT/HTTP     Engine        Prometheus     Docker        Sharding     React/MUI    PostgreSQL
+             1 device      multi-field   AMQP          Fault inject  Grafana        Compose       Backpressure Dashboard    CRUD API
+             console out   YAML config   real brokers  Sim clock     Admin API      Full stack    Replay       Telemetry    Profiles UI
 
-             [testable]    [testable]    [testable]    [testable]    [testable]     [testable]    [testable]
+             [testable]    [testable]    [testable]    [testable]    [testable]     [testable]    [testable]   [testable]   [testable]
 ```
 
 Each phase ends with a working, testable system. An AI agent should execute tasks within a phase sequentially (task dependencies are linear within a phase), but should run all unit tests after each task to catch regressions early.
+
+---
+
+### PHASE 9: PostgreSQL-Backed Device Profiles
+
+**Goal**: Replace YAML file-based device profiles with profiles persisted in PostgreSQL, managed through a REST CRUD API and a frontend UI.
+
+#### Task 9.1: Database Layer (Python)
+
+**Files:**
+
+- `orchestrator/orchestrator/database.py` — Async SQLAlchemy engine (`create_async_engine` with `asyncpg`), `AsyncSessionLocal` session factory, `Base` declarative class, `init_db()` (runs `metadata.create_all` on startup), `get_session()` FastAPI dependency.
+- `orchestrator/orchestrator/models.py` — `DeviceProfile` ORM model with columns: `id` (UUID PK), `name` (unique TEXT), `type` (TEXT), `protocol` (TEXT, default `console`), `topic_template` (TEXT), `telemetry_interval` (TEXT, default `5s`), `telemetry_fields` (JSONB, default `{}`), `labels` (JSONB, default `{}`), `created_at` / `updated_at` (TIMESTAMPTZ).
+
+**Dependencies added:** `sqlalchemy[asyncio]>=2.0.0`, `asyncpg>=0.29.0` in `pyproject.toml` and `Dockerfile.orchestrator`.
+
+**Acceptance criteria:** `init_db()` creates the `device_profiles` table on a fresh PostgreSQL instance without errors.
+
+#### Task 9.2: Profile CRUD API (Python)
+
+**File:** `orchestrator/orchestrator/api.py`
+
+**New endpoints:**
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `GET` | `/api/v1/profiles` | List all profiles ordered by name |
+| `POST` | `/api/v1/profiles` | Create profile; returns 201 with full object |
+| `GET` | `/api/v1/profiles/{id}` | Get profile by UUID |
+| `PUT` | `/api/v1/profiles/{id}` | Partial update (all fields optional) |
+| `DELETE` | `/api/v1/profiles/{id}` | Delete; returns 204 |
+
+**Updated endpoint:**
+
+- `POST /api/v1/devices/spawn` — `SpawnRequest.profile` replaced by `profile_id: str` (UUID). Loads profile from DB, calls `profile_to_specs_from_dict()`.
+
+**New helper in `config.py`:** `profile_to_specs_from_dict(data: dict, count: int) -> list[DeviceSpec]` — validates the dict through existing Pydantic models and converts to protos.
+
+**Acceptance criteria:** All five profile endpoints return correct status codes and bodies; spawn with a valid `profile_id` spawns devices; spawn with a missing ID returns 404.
+
+#### Task 9.3: PostgreSQL in Docker Compose
+
+**File:** `deployments/docker-compose.yaml`
+
+- Add `postgres:16-alpine` service with `POSTGRES_USER/PASSWORD/DB=iotsim`, healthcheck (`pg_isready`), named volume `postgres_data`.
+- Add `DATABASE_URL=postgresql+asyncpg://iotsim:iotsim@postgres:5432/iotsim` env to `orchestrator`.
+- Add `postgres: service_healthy` to orchestrator `depends_on`.
+
+#### Task 9.4: Profiles Page (React/TypeScript)
+
+**New files:**
+
+- `frontend/src/pages/ProfilesPage.tsx` — Profile table (name, type, protocol, interval, fields, labels) with edit/delete per row; "New Profile" button; create/edit dialog with all fields, per-generator parameter inputs driven by generator type selector, label key/value editor; delete confirmation dialog.
+- `frontend/src/api/hooks/useProfiles.ts` — `useQuery` for `GET /api/v1/profiles`.
+- `frontend/src/api/hooks/useCreateProfile.ts` — `useMutation` for `POST`, invalidates `profiles` query.
+- `frontend/src/api/hooks/useUpdateProfile.ts` — `useMutation` for `PUT`, invalidates `profiles` query.
+- `frontend/src/api/hooks/useDeleteProfile.ts` — `useMutation` for `DELETE`, invalidates `profiles` query.
+
+**Modified files:**
+
+- `frontend/src/api/types.ts` — Add `DeviceProfile`, `TelemetryFieldConfig`, `ProfileCreateRequest`, `ProfileUpdateRequest`; change `SpawnRequest.profile: string` to `profile_id: string`.
+- `frontend/src/api/client.ts` — Add `api.profiles.{list, get, create, update, delete}`.
+- `frontend/src/App.tsx` — Add `<Route path="/profiles" element={<ProfilesPage />} />`.
+- `frontend/src/components/layout/AppLayout.tsx` — Add "Profiles" nav item (Tune icon) between Devices and Telemetry.
+- `frontend/src/pages/DevicesPage.tsx` — Replace free-text profile path field with a `Select` dropdown populated from `useProfiles()`; spawn sends `profile_id`.
+
+**Acceptance criteria:** Creating a profile in the UI and then spawning devices from it in the Devices page successfully spawns devices without errors.
 
 ---
 

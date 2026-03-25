@@ -17,6 +17,7 @@ import DashboardIcon from '@mui/icons-material/Dashboard';
 import DevicesIcon from '@mui/icons-material/Devices';
 import TimelineIcon from '@mui/icons-material/Timeline';
 import RouterIcon from '@mui/icons-material/Router';
+import TuneIcon from '@mui/icons-material/Tune';
 import { type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useHealth } from '../../api/hooks/useHealth';
@@ -26,6 +27,7 @@ const DRAWER_WIDTH = 220;
 const NAV_ITEMS = [
   { label: 'Dashboard', path: '/', icon: <DashboardIcon fontSize="small" /> },
   { label: 'Devices', path: '/devices', icon: <DevicesIcon fontSize="small" /> },
+  { label: 'Profiles', path: '/profiles', icon: <TuneIcon fontSize="small" /> },
   { label: 'Telemetry', path: '/telemetry', icon: <TimelineIcon fontSize="small" /> },
 ];
 

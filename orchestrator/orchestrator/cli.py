@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -12,7 +10,6 @@ from rich.table import Table
 
 from orchestrator.grpc_client import (
     RuntimeClient,
-    generate_device_ids,
     make_label_selector,
 )
 
@@ -60,16 +57,14 @@ async def _spawn(profile_path: str, count: int, runtime: str) -> None:
 @app.command()
 def stop(
     all_devices: bool = typer.Option(False, "--all", help="Stop all devices"),
-    device_type: Optional[str] = typer.Option(
-        None, "--type", "-t", help="Stop by device_type label"
-    ),
+    device_type: str | None = typer.Option(None, "--type", "-t", help="Stop by device_type label"),
     runtime: str = typer.Option(_DEFAULT_RUNTIME, "--runtime", "-r"),
 ) -> None:
     """Stop running devices."""
     asyncio.run(_stop(all_devices, device_type, runtime))
 
 
-async def _stop(all_devices: bool, device_type: Optional[str], runtime: str) -> None:
+async def _stop(all_devices: bool, device_type: str | None, runtime: str) -> None:
     selector = None
     if device_type:
         selector = make_label_selector(f"device_type={device_type}")
@@ -125,15 +120,15 @@ async def _status(runtime: str) -> None:
 
 @app.command()
 def stream(
-    device_type: Optional[str] = typer.Option(None, "--type", "-t"),
-    device_ids: Optional[str] = typer.Option(None, "--ids", help="Comma-separated device IDs"),
+    device_type: str | None = typer.Option(None, "--type", "-t"),
+    device_ids: str | None = typer.Option(None, "--ids", help="Comma-separated device IDs"),
     runtime: str = typer.Option(_DEFAULT_RUNTIME, "--runtime", "-r"),
 ) -> None:
     """Stream live telemetry from running devices."""
     asyncio.run(_stream(device_type, device_ids, runtime))
 
 
-async def _stream(device_type: Optional[str], device_ids: Optional[str], runtime: str) -> None:
+async def _stream(device_type: str | None, device_ids: str | None, runtime: str) -> None:
     from orchestrator.grpc_client import make_device_id_selector
 
     selector = None
@@ -148,9 +143,8 @@ async def _stream(device_type: Optional[str], device_ids: Optional[str], runtime
             async for batch in client.stream_telemetry(selector=selector, batch_size=50):
                 for pt in batch.points:
                     val = _point_value(pt)
-                    console.print(
-                        f"[cyan]{pt.device_id}[/cyan] {pt.metric_name}={val}  ts={pt.timestamp.ToDatetime()}"
-                    )
+                    ts = pt.timestamp.ToDatetime()
+                    console.print(f"[cyan]{pt.device_id}[/cyan] {pt.metric_name}={val}  ts={ts}")
         except KeyboardInterrupt:
             pass
 

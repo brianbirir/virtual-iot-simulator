@@ -23,7 +23,9 @@ RUN pip wheel --no-cache-dir --wheel-dir /wheels \
     "pyyaml>=6.0.1" \
     "rich>=13.7.0" \
     "fastapi>=0.111.0" \
-    "uvicorn[standard]>=0.29.0"
+    "uvicorn[standard]>=0.29.0" \
+    "sqlalchemy[asyncio]>=2.0.0" \
+    "asyncpg>=0.29.0"
 
 # ── Stage 2: runtime image ────────────────────────────────────────────────────
 FROM python:3.12-slim

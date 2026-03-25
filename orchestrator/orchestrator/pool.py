@@ -12,13 +12,7 @@ import asyncio
 import bisect
 import hashlib
 from collections import defaultdict
-from typing import Optional
 
-from orchestrator.grpc_client import (
-    RuntimeClient,
-    make_device_id_selector,
-    make_label_selector,
-)
 from simulator.v1.device_pb2 import DeviceSpec
 from simulator.v1.orchestrator_pb2 import (
     DeviceSelector,
@@ -28,6 +22,9 @@ from simulator.v1.orchestrator_pb2 import (
     StopDevicesResponse,
 )
 
+from orchestrator.grpc_client import (
+    RuntimeClient,
+)
 
 # ---------------------------------------------------------------------------
 # Consistent hash ring
@@ -94,7 +91,7 @@ class RuntimePool:
         """Close all gRPC channels."""
         await asyncio.gather(*(c.close() for c in self._clients.values()), return_exceptions=True)
 
-    async def __aenter__(self) -> "RuntimePool":
+    async def __aenter__(self) -> RuntimePool:
         await self.connect()
         return self
 
@@ -125,11 +122,11 @@ class RuntimePool:
                 for addr, group_specs in groups.items()
             )
         )
-        return dict(zip(groups.keys(), responses))
+        return dict(zip(groups.keys(), responses, strict=True))
 
     async def stop(
         self,
-        selector: Optional[DeviceSelector] = None,
+        selector: DeviceSelector | None = None,
         graceful: bool = True,
     ) -> list[StopDevicesResponse]:
         """Stop devices on all instances. Fan-out for label selectors and --all."""
@@ -139,7 +136,7 @@ class RuntimePool:
             )
         )
 
-    async def status(self, selector: Optional[DeviceSelector] = None) -> list[FleetStatus]:
+    async def status(self, selector: DeviceSelector | None = None) -> list[FleetStatus]:
         """Return fleet status from all instances."""
         return list(
             await asyncio.gather(*(c.status(selector=selector) for c in self._clients.values()))

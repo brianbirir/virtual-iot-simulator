@@ -1,5 +1,8 @@
 import type {
+  DeviceProfile,
   HealthResponse,
+  ProfileCreateRequest,
+  ProfileUpdateRequest,
   SpawnRequest,
   SpawnResponse,
   StatusResponse,
@@ -26,6 +29,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(detail);
   }
 
+  // 204 No Content has no body
+  if (res.status === 204) return undefined as T;
+
   return res.json() as Promise<T>;
 }
 
@@ -45,4 +51,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  profiles: {
+    list: () => request<DeviceProfile[]>(`${BASE}/profiles`),
+    get: (id: string) => request<DeviceProfile>(`${BASE}/profiles/${id}`),
+    create: (body: ProfileCreateRequest) =>
+      request<DeviceProfile>(`${BASE}/profiles`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    update: (id: string, body: ProfileUpdateRequest) =>
+      request<DeviceProfile>(`${BASE}/profiles/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    delete: (id: string) =>
+      request<void>(`${BASE}/profiles/${id}`, { method: 'DELETE' }),
+  },
 };
